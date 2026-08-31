@@ -1,0 +1,45 @@
+# AI Tools Used
+
+This project was built with an AI-assisted workflow. Per the Track 3 rules,
+using AI tools to analyze the workload and generate/optimize kernels is
+explicitly in scope and earns bonus points. This log documents that usage
+honestly.
+
+## Tools
+
+| Tool | Role |
+|---|---|
+| **Claude (Claude Code, Opus 4.8)** | Read and line-by-line analyzed the official `torch_transformer_benchmark.py`; designed the optimization strategy (multi-agent design pass exploring an SDPA/compile MVP, a Triton/dispatch track, and an infra/deliverables track); implemented `UserOptimizedTransformer`; wrote the run harness, notebooks, and this documentation. |
+| **Google Colab / Kaggle** | Free GPU runtimes (T4 / P100) used to benchmark and validate — an explicitly allowed development tool. |
+| **PyTorch Inductor (`torch.compile`)** | AI/compiler-driven kernel generation: automatically fuses LayerNorm, bias, and GELU epilogues into Triton kernels. |
+
+## How AI shaped the technical decisions
+
+1. **Workload analysis.** The AI extracted the exact grading contract from the
+   harness code (tolerances `atol=0.002`/`rtol=0.02`, per-element all-pass rule,
+   `strict=True` weight copy, fp32 softmax reference, `padding_ratio=0` hot path)
+   rather than guessing — several of these directly constrain the implementation.
+2. **The headline insight.** The AI computed that shape 14's baseline score
+   matrix is `[32,16,1e5,1e5] = 5.12e12` elements ≈ **20.5 TB**, proving the
+   baseline is infeasible and that a memory-efficient (Flash) attention is
+   mandatory, not merely faster. This reframed the whole submission as
+   "impossible → possible."
+3. **Per-shape dispatch.** The AI classified the 14 shapes into launch-bound,
+   compute/throughput-bound, and memory-bound buckets and picked the
+   `torch.compile` mode + chunking policy per bucket.
+4. **Correctness-first discipline.** The AI enumerated the harness' failure traps
+   (NaN on fully-masked rows, tanh-GELU drift, mixing `is_causal` with a dense
+   mask that can't be allocated at S=1e5) and encoded guards for each.
+
+## Prompt → design → diff → verify loop
+
+- **Prompt:** analyze the benchmark and produce a correctness-verified plan.
+- **Design:** parallel design agents (MVP / Triton / infra) → synthesized plan
+  (see `report/` and the project plan).
+- **Diff:** implemented `user_optimized.py`, `submission.py`, `run_all.py`,
+  `scripts/shape14_optimized_only.py`.
+- **Verify:** every shape re-run through the *official* harness on cloud GPUs;
+  results captured in `results/results.csv` and the ablation table.
+
+_This file is intentionally specific so judges can see exactly where AI was used
+and where human review/verification gated it._

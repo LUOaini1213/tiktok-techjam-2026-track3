@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+.venv/
+venv/
+# Watermarked problem-statement screenshots (kept locally, not published)
+屏幕截图*.png
+*.png.local
+# Large / transient logs
+logs/
+*.log
+.DS_Store

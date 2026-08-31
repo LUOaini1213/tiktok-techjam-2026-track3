@@ -1,0 +1,8 @@
+# Track 3 — Transformer GPU kernel optimization
+# On Colab / Kaggle GPU runtimes torch (>=2.1, CUDA build) is preinstalled — do
+# NOT reinstall it there (it burns quota and can break the CUDA build).
+#
+# Triton is bundled with the Linux CUDA build of torch and is only needed for
+# the OPTIONAL custom kernels in kernels/ (M4). The core path needs only torch.
+
+torch>=2.1
