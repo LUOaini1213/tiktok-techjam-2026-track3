@@ -62,6 +62,7 @@ class UserOptimizedTransformer(BaselineTransformer):
         self._chunk_bs: Optional[int] = None
         self._compiled = None
         self._compile_ok = _env_flag("T3_COMPILE", True)
+        self._can_compile = False  # set in _plan: Triton needs CUDA capability >= 7.0
         self._fp32_ffn = _env_flag("T3_FP32_FFN", False)
 
     # ---- one-time device/shape aware planning -------------------------------
@@ -69,6 +70,14 @@ class UserOptimizedTransformer(BaselineTransformer):
         if self._planned:
             return
         self._planned = True
+
+        # torch.compile uses the Triton backend, which requires CUDA capability
+        # >= 7.0 (Volta+). Older GPUs (e.g. Kaggle's Tesla P100 = sm_60) must run
+        # eager. get_device_capability does not launch a kernel, so it is safe.
+        self._can_compile = (
+            x.device.type == "cuda"
+            and torch.cuda.get_device_capability(x.device)[0] >= 7
+        )
 
         # Only autocast when the model runs in fp32; if the grader already uses
         # fp16/bf16 the params are low precision and tensor cores are used.
@@ -167,7 +176,7 @@ class UserOptimizedTransformer(BaselineTransformer):
         b = x.shape[0]
 
         # Lazily build the compiled callable on the first CUDA forward.
-        if self._compiled is None and self._compile_ok and x.device.type == "cuda":
+        if (self._compiled is None and self._compile_ok and self._can_compile):
             try:
                 mode = os.environ.get("T3_COMPILE_MODE")
                 if mode is None:
@@ -176,13 +185,25 @@ class UserOptimizedTransformer(BaselineTransformer):
             except Exception:
                 self._compile_ok = False
                 self._compiled = None
-        run = self._compiled if self._compiled is not None else self._run_full
 
-        def core(xin, m, av):
+        def _invoke(fn, xin, m, av):
             if ad is not None:
                 with torch.autocast("cuda", dtype=ad):
-                    return run(xin, m, causal, av)
-            return run(xin, m, causal, av)
+                    return fn(xin, m, causal, av)
+            return fn(xin, m, causal, av)
+
+        def core(xin, m, av):
+            fn = self._compiled if self._compiled is not None else self._run_full
+            try:
+                return _invoke(fn, xin, m, av)
+            except Exception:
+                if fn is self._run_full:
+                    raise
+                # Compiled path failed at CALL time (e.g. Triton needs sm>=7.0,
+                # or an inductor edge case) -> permanently fall back to eager.
+                self._compile_ok = False
+                self._compiled = None
+                return _invoke(self._run_full, xin, m, av)
 
         if self._chunk_bs is not None and self._chunk_bs < b:  # extreme shape only
             outs: List[torch.Tensor] = []

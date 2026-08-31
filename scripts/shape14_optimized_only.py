@@ -84,8 +84,9 @@ def timing_full(args, device):
 
 def correctness_truncated(args, device):
     print(f"\n=== B) truncated seq_len={args.trunc_seq}, correctness vs baseline ===")
+    # Small batch so the baseline's [B,H,S,S] scores fit (baseline is the reference).
     cfg = bench.TransformerConfig(**{**FULL, "seq_len": args.trunc_seq,
-                                     "num_layers": args.layers})
+                                     "num_layers": args.layers, "batch_size": 2})
     dtype = torch.float32  # match grading semantics for the reference
     baseline, optimized = build_pair(cfg, device, dtype)
     x, mask = bench.generate_random_case(cfg, device, dtype, seed=1234,

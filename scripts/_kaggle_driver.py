@@ -8,8 +8,9 @@ def _shape14(device):
     FULL = dict(batch_size=32, seq_len=100000, d_model=1024, num_heads=16,
                 ffn_dim=1024, num_layers=2, causal=True)
 
-    # (B) correctness by construction at a truncated seq_len the baseline can run.
-    tc = dict(FULL); tc["seq_len"] = 2048
+    # (B) correctness by construction at a truncated seq_len AND a small batch so
+    # the baseline's [B,H,S,S] score matrix fits (B=2,H=16,S=2048 -> ~2 GB).
+    tc = dict(FULL); tc["seq_len"] = 2048; tc["batch_size"] = 2
     cfg = TransformerConfig(**tc)
     base = BaselineTransformer(cfg); opt = UserOptimizedTransformer(cfg)
     copy_model_weights(base, opt, strict=True)
