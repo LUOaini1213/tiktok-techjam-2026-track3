@@ -7,7 +7,10 @@ venv/
 # Watermarked problem-statement screenshots (kept locally, not published)
 屏幕截图*.png
 *.png.local
+# Build artifacts
+*.zip
 # Large / transient logs
 logs/
 *.log
 .DS_Store
+.kaggle_upload/

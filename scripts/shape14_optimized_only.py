@@ -27,7 +27,9 @@ import time
 
 import torch
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_here = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _here)                    # flat layout (e.g. Kaggle working dir)
+sys.path.insert(0, os.path.dirname(_here))   # repo layout (scripts/ under repo root)
 
 import torch_transformer_benchmark as bench
 from user_optimized import UserOptimizedTransformer
