@@ -4,10 +4,11 @@
 > numbers from results/results.csv after the cloud run.
 
 ## Elevator pitch
-A drop-in, numerically-faithful GPU-optimized Transformer layer that is **[MEDIAN]×
-faster** than the reference across the official shapes — and turns the
-`seq_len=100000` case from **impossible into possible** (the baseline needs
-~20.5 TB just for its attention scores; ours runs in **[MS] ms**).
+A drop-in, numerically-faithful GPU-optimized Transformer layer that is a
+**1.96× median (up to 4.01×)** faster than the reference across the official
+shapes — with all 13 gradeable shapes passing exactly (max_abs ≈ 1e-6) — and it
+turns the `seq_len=100000` case from **impossible into possible** (the baseline
+needs ~20.5 TB just for its attention scores).
 
 ## How our solution addresses the problem statement
 The task: optimize the runtime of a Transformer forward pass on a GPU while
@@ -38,11 +39,13 @@ levers:
   official harness; no external data.
 
 ## Results
-- Median speedup across shapes 1–13: **[MEDIAN]×** (range [MIN]×–[MAX]×), all
-  PASS at `atol=0.002 / rtol=0.02`. GPU: **[GPU]**, torch **[VER]**.
-- Shape 14 (`seq_len=100000`): baseline infeasible (~20.5 TB scores); ours runs
-  at **[MS] ms → [TOK/S] tok/s**, peak VRAM **[GB] GB**; correctness validated by
-  construction at a truncated length.
+- Median speedup across shapes 1–13: **1.96×** (range 1.09×–4.01×), all PASS at
+  `atol=0.002 / rtol=0.02`, `max_abs ≈ 1e-6`. GPU: **free Kaggle Tesla P100**,
+  torch 2.5.1+cu121 — from SDPA alone (P100 has no Triton/`torch.compile`; a T4
+  run with compilation enabled is higher still).
+- Shape 14 (`seq_len=100000`): baseline infeasible (~20.5 TB scores); correctness
+  validated by construction at a truncated length (PASS, max_abs 1.2e-6); the
+  full length runs on a FlashAttention-capable GPU (sm_75+).
 - Full table + ablation: see the GitHub repo (`results/`).
 
 ## Challenges

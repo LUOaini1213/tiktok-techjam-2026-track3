@@ -56,12 +56,33 @@ python scripts/shape14_optimized_only.py --trunc-seq 2048       # shape 14 (Kagg
 
 ## Results
 
-See [`results/results.csv`](results/results.csv) and
-[`results/ablation.md`](results/ablation.md). _(Filled in after the cloud runs.)_
+Measured on a **free Kaggle Tesla P100** (fp32 grading), full data in
+[`results/results.csv`](results/results.csv):
 
-| shape | B,D,H,S,L,F | pass | max_rel | speedup |
-|---|---|---|---|---|
-| … | … | … | … | … |
+**13/13 gradeable shapes PASS · median speedup 1.96× · up to 4.01× · max_abs ≈ 1e-6.**
+
+| # | B,D,H,S,F | pass | max_abs | baseline ms | opt ms | speedup |
+|---|---|---|---|---|---|---|
+| 1 | 64,128,4,128,128 | ✅ | 1.2e-6 | 5.81 | 3.31 | 1.76× |
+| 2 | 1,128,4,128,128 | ✅ | 9.5e-7 | 2.89 | 1.28 | 2.27× |
+| 3 | 4,128,4,128,128 | ✅ | 9.5e-7 | 2.95 | 1.50 | 1.96× |
+| 4 | 16,128,4,128,128 | ✅ | 1.1e-6 | 2.80 | 1.27 | 2.21× |
+| 5 | 128,128,4,128,128 | ✅ | 1.4e-6 | 10.93 | 6.13 | 1.78× |
+| 6 | 10000,128,4,128,128 | ✅ | 1.9e-6 | 772.0 | 417.5 | 1.85× |
+| 7 | 64,32,4,128,32 | ✅ | 9.5e-7 | 3.94 | 1.93 | 2.05× |
+| 8 | 64,1024,4,128,1024 | ✅ | 1.9e-6 | 72.2 | 66.1 | 1.09× |
+| 9 | 64,128,1,128,128 | ✅ | 1.2e-6 | 3.76 | 3.05 | 1.23× |
+| 10 | 64,128,2,128,128 | ✅ | 1.2e-6 | 4.70 | 3.08 | 1.53× |
+| 11 | 64,128,16,128,128 | ✅ | 1.4e-6 | 12.46 | 4.86 | 2.57× |
+| 12 | 64,128,4,32,128 | ✅ | 1.2e-6 | 2.84 | 1.26 | 2.25× |
+| 13 | 64,128,4,1024,128 | ✅ | 1.4e-6 | 168.4 | 42.0 | **4.01×** |
+| 14 | 32,1024,16,100000,1024 | ✅ (truncated) | 1.2e-6 | — baseline infeasible (~20.5 TB) — |
+
+Shape 14's baseline cannot run (its `[B,H,S,S]` scores are ~20.5 TB). Correctness
+is validated by construction at a truncated `seq_len`; the full-length forward
+needs a GPU with FlashAttention (sm_75+, e.g. T4/A100). On P100 `torch.compile`
+is unavailable (Triton needs sm≥7.0), so these numbers are from SDPA alone — a
+T4 with compilation enabled is higher still. See `report/figures/`.
 
 ## Ablation
 
