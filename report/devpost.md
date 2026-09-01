@@ -5,7 +5,7 @@
 
 ## Elevator pitch
 A drop-in, numerically-faithful GPU-optimized Transformer layer that is
-**2.36× median (up to 4.51×)** faster than the reference across the official
+**2.28× median (up to 4.44×)** faster than the reference across the official
 shapes — all 13 gradeable shapes passing at `max_abs ≈ 1e-6`, about 1000× inside
 the tolerance gate — and it turns the `seq_len=100000` case from **impossible
 into possible**: the baseline needs ~20.5 TB just for its attention scores, ours
@@ -45,7 +45,7 @@ levers:
   official harness; no external data.
 
 ## Results
-- Median speedup across shapes 1–13: **2.36×** (range 1.09×–4.51×) on a free
+- Median speedup across shapes 1–13: **2.28×** (range 1.09×–4.44×) on a free
   **Kaggle Tesla T4**, all PASS at `atol=0.002 / rtol=0.02` with
   `max_abs ≈ 1e-6`. On a **Tesla P100** (sm_60, where Triton and so
   `torch.compile` are unavailable) the same code gets 2.07× from SDPA alone.

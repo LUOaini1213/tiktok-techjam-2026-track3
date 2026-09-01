@@ -30,7 +30,7 @@ self-applied torch.compile where the GPU supports it. We also built an fp16
 tensor-core path that is nearly twice as fast again — and we ship it turned off.
 It passes every shape, but its worst error has already crossed the absolute
 tolerance and only survives on the relative one. That is luck, not margin. Here's the full
-sweep." (Show `run_all` / results table + `speedups.png`: median 2.36x on a T4 (2.07x on a P100),
+sweep." (Show `run_all` / results table + `speedups.png`: median 2.28x on a T4 (2.07x on a P100),
 all PASS, max_abs about 1e-6.)
 
 **2:05–2:35 — How it stays correct & drop-in.**
@@ -42,7 +42,7 @@ GELU is exact, fully-masked rows are guarded — zero failed elements." (Show th
 **2:35–3:00 — Free cloud + AI, close.**
 "All of this ran on free Colab/Kaggle GPUs from a laptop with no NVIDIA card,
 driven headlessly. We used Claude to analyze the harness, design the approach,
-and write the kernels — logged in AI_TOOLS.md. From impossible to 2.36x
+and write the kernels — logged in AI_TOOLS.md. From impossible to 2.28x
 faster." (Show repo + headline number.)
 
 ## Capture checklist

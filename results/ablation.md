@@ -51,14 +51,14 @@ right.**
 
 A full 13-shape fp16 sweep on the T4 (`results_t4_fp16.csv`,
 `kaggle_t4_fp16_run.log`) **passes all 13 shapes** at a **median 4.014x**
-(1.320x - 11.528x), against 2.357x for the shipped fp32 path. That is nearly
+(1.320x - 11.528x), against 2.282x for the shipped fp32 path. That is nearly
 double, for one environment variable.
 
 Here is why we still do not ship it:
 
 | regime | shapes PASS | median speedup | worst `max_abs` | margin vs `atol=0.002` |
 |---|---|---|---|---|
-| fp32 (shipped) | 13/13 | 2.357x | 1.91e-6 | **1049x** |
+| fp32 (shipped) | 13/13 | 2.282x | 1.91e-6 | **1049x** |
 | fp16 (`T3_AUTOCAST=fp16`) | 13/13 | 4.014x | **2.04e-3** | **0.98x** |
 
 The fp16 worst case, shape 6, is `max_abs = 0.0020388` — it has **already
@@ -71,7 +71,7 @@ fails, and a single failing element fails the whole shape and forfeits the speed
 score entirely.
 
 So the trade is: **2x more speed, in exchange for a correctness margin of
-essentially zero on a hard gate.** We take the 2.357x that sits 1049x inside
+essentially zero on a hard gate.** We take the 2.282x that sits 1049x inside
 tolerance. The flag is there, documented and measured, for anyone who wants the
 other side of that trade.
 
@@ -102,10 +102,10 @@ The same code on two free cards, both fp32, both 13/13 PASS:
 |---|---|---|
 | `torch.compile` | unavailable (Triton needs sm>=7.0) | active |
 | SDPA backend | memory-efficient | FlashAttention |
-| median speedup | 2.065x | **2.357x** |
-| range | 1.098x - 4.001x | 1.088x - 4.505x |
+| median speedup | 2.065x | **2.282x** |
+| range | 1.098x - 4.001x | 1.086x - 4.439x |
 
-Note the T4's *baselines* are slower than the P100's (shape 13: 316.8 ms vs
+Note the T4's *baselines* are slower than the P100's (shape 13: 318.7 ms vs
 168.6 ms) — the P100 has higher fp32 throughput and roughly twice the memory
 bandwidth. The ratio improves on the T4 anyway, because our path picks up
 compile and FlashAttention there while the baseline stays bandwidth-bound. The
