@@ -243,6 +243,14 @@ Environment toggles: `T3_AUTOCAST` (auto|fp16|bf16|off), `T3_COMPILE` (1|0),
   padded path memory-efficient too (block-sparse or a folded key-padding mask)
   is unfinished work, not a solved problem we left out.
 
+## Report
+
+A rendered version of the technical report, with the figures inline:
+**https://claude.ai/code/artifact/80227d3c-9682-42d0-a957-bf5188704088**
+(print to PDF from the browser). Source: [`report/report.md`](report/report.md);
+the page is assembled from the measured CSVs by
+`scripts/build_report_page.py`, so its numbers cannot drift from the data.
+
 ## AI tooling
 
 Design and implementation were driven with Claude (Claude Code). See

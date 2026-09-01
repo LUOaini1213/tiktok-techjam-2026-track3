@@ -1,9 +1,8 @@
 # Track 3 Technical Report — Implement a GPU Kernel for a Transformer Layer
 ### TikTok TechJam 2026
 
-A rendered, shareable version of this report is linked from the repo README.
-To produce a PDF locally: open this file in VS Code with the Markdown PDF
-extension, or run `pandoc report.md -o report.pdf`.
+Rendered version (figures inline, print-to-PDF from the browser):
+https://claude.ai/code/artifact/80227d3c-9682-42d0-a957-bf5188704088
 
 ## 1. Environment
 

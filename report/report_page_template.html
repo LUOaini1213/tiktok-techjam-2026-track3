@@ -1,0 +1,576 @@
+<title>Track 3 GPU Kernel Report</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:ital,wght@0,400;0,600;1,400&display=swap">
+
+<style>
+  :root {
+    color-scheme: light;
+    --ground:   #f7f8fa;
+    --surface:  #ffffff;
+    --sunken:   #eef1f5;
+    --ink:      #11161d;
+    --ink-2:    #3c4753;
+    --muted:    #5f6b78;
+    --rule:     #dde3ea;
+    --rule-2:   #eaeef3;
+    --accent:   #2a6fd6;
+    --accent-w: #e8f0fc;
+    --crit:     #b8372c;
+    --crit-w:   #fbeceb;
+    --good:     #17703f;
+    --good-w:   #e7f4ec;
+    --shadow:   0 1px 2px rgba(17,22,29,.05), 0 8px 24px -12px rgba(17,22,29,.14);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --ground:   #0d1117;
+      --surface:  #151b23;
+      --sunken:   #1b222c;
+      --ink:      #e4e9ef;
+      --ink-2:    #c2cbd6;
+      --muted:    #8d9aa9;
+      --rule:     #242d38;
+      --rule-2:   #1c242e;
+      --accent:   #6ba4f0;
+      --accent-w: #16263c;
+      --crit:     #ec8279;
+      --crit-w:   #33201e;
+      --good:     #52b581;
+      --good-w:   #16301f;
+      --shadow:   0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --ground:   #0d1117;
+    --surface:  #151b23;
+    --sunken:   #1b222c;
+    --ink:      #e4e9ef;
+    --ink-2:    #c2cbd6;
+    --muted:    #8d9aa9;
+    --rule:     #242d38;
+    --rule-2:   #1c242e;
+    --accent:   #6ba4f0;
+    --accent-w: #16263c;
+    --crit:     #ec8279;
+    --crit-w:   #33201e;
+    --good:     #52b581;
+    --good-w:   #16301f;
+    --shadow:   0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: "IBM Plex Serif", Georgia, "Times New Roman", serif;
+    font-size: 17px;
+    line-height: 1.68;
+    margin: 0;
+    padding: 0 clamp(18px, 5vw, 56px) 96px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 1020px; margin: 0 auto; }
+
+  /* Prose column sits inside a wider frame; tables and figures break out. */
+  .col { max-width: 68ch; }
+
+  h1, h2, h3, .label, .eyebrow, thead th, .gauge-name, .kpi-label, .chip {
+    font-family: "IBM Plex Sans", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  }
+  code, kbd, pre, .num, .mono, td.n, th.n {
+    font-family: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ---------- masthead ---------- */
+  header.masthead {
+    padding: clamp(40px, 7vw, 76px) 0 34px;
+    border-bottom: 1px solid var(--rule);
+  }
+  .eyebrow {
+    font-size: 12px; font-weight: 600; letter-spacing: .13em;
+    text-transform: uppercase; color: var(--muted); margin: 0 0 18px;
+  }
+  h1 {
+    font-size: clamp(30px, 5.2vw, 50px); line-height: 1.08; font-weight: 600;
+    letter-spacing: -.02em; text-wrap: balance; margin: 0 0 20px; color: var(--ink);
+  }
+  .standfirst {
+    font-size: clamp(17px, 2.1vw, 20px); color: var(--ink-2);
+    max-width: 62ch; margin: 0; font-style: italic;
+  }
+
+  /* ---------- KPI strip ---------- */
+  .kpis {
+    display: grid; gap: 1px; background: var(--rule);
+    grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+    border: 1px solid var(--rule); border-radius: 3px; overflow: hidden;
+    margin: 30px 0 0;
+  }
+  .kpi { background: var(--surface); padding: 16px 18px 15px; }
+  .kpi-label {
+    font-size: 11px; font-weight: 600; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--muted); margin: 0 0 7px;
+  }
+  .kpi-value {
+    font-family: "IBM Plex Mono", monospace; font-size: 25px; font-weight: 500;
+    letter-spacing: -.02em; color: var(--ink); line-height: 1.1;
+    font-variant-numeric: tabular-nums;
+  }
+  .kpi-note { font-size: 12.5px; color: var(--muted); margin-top: 5px; line-height: 1.4; }
+
+  /* ---------- sections ---------- */
+  section { padding-top: 52px; }
+  .sec-head { display: flex; gap: 16px; align-items: baseline; margin-bottom: 6px; }
+  .sec-num {
+    font-family: "IBM Plex Mono", monospace; font-size: 13px; font-weight: 500;
+    color: var(--accent); flex: none; padding-top: 6px;
+  }
+  h2 {
+    font-size: clamp(21px, 2.8vw, 27px); font-weight: 600; letter-spacing: -.015em;
+    margin: 0; color: var(--ink); text-wrap: balance;
+  }
+  h3 {
+    font-size: 17px; font-weight: 600; letter-spacing: -.005em;
+    margin: 34px 0 8px; color: var(--ink);
+  }
+  p { margin: 0 0 17px; }
+  .col > p:last-child { margin-bottom: 0; }
+  strong { font-weight: 600; color: var(--ink); }
+  em.term { font-style: italic; }
+  a { color: var(--accent); text-underline-offset: 2px; }
+
+  code {
+    font-size: .875em; background: var(--sunken); color: var(--ink-2);
+    padding: .1em .34em; border-radius: 3px;
+  }
+  pre {
+    background: var(--sunken); border: 1px solid var(--rule-2); border-radius: 4px;
+    padding: 14px 16px; overflow-x: auto; font-size: 13px; line-height: 1.6;
+    margin: 0 0 18px; color: var(--ink-2);
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+
+  /* ---------- tables ---------- */
+  .tablewrap { overflow-x: auto; margin: 22px 0 8px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  caption {
+    caption-side: bottom; text-align: left; font-size: 12.5px; color: var(--muted);
+    padding-top: 10px; font-family: "IBM Plex Sans", sans-serif;
+  }
+  thead th {
+    text-align: left; font-size: 11px; font-weight: 600; letter-spacing: .07em;
+    text-transform: uppercase; color: var(--muted); padding: 0 14px 8px 0;
+    border-bottom: 1px solid var(--rule); white-space: nowrap;
+  }
+  tbody td { padding: 8px 14px 8px 0; border-bottom: 1px solid var(--rule-2); }
+  tbody tr:last-child td { border-bottom: none; }
+  td.n, th.n { text-align: right; padding-right: 18px; }
+  th.n { padding-right: 18px; }
+  tbody tr.hi td { background: var(--accent-w); }
+  .win { color: var(--accent); font-weight: 500; }
+  .bad { color: var(--crit); font-weight: 500; }
+  .ok  { color: var(--good); font-weight: 500; }
+
+  .chip {
+    display: inline-block; font-size: 11px; font-weight: 600; letter-spacing: .04em;
+    padding: 2px 7px; border-radius: 3px; white-space: nowrap;
+  }
+  .chip-good { background: var(--good-w); color: var(--good); }
+  .chip-bad  { background: var(--crit-w); color: var(--crit); }
+
+  /* ---------- margin gauge ---------- */
+  .gauge {
+    border: 1px solid var(--rule); border-radius: 4px; background: var(--surface);
+    padding: 22px 24px 18px; margin: 26px 0 10px; box-shadow: var(--shadow);
+  }
+  .gauge-row { display: grid; grid-template-columns: minmax(120px,190px) 1fr; gap: 16px;
+               align-items: center; margin-bottom: 16px; }
+  .gauge-row:last-of-type { margin-bottom: 6px; }
+  .gauge-name { font-size: 13px; font-weight: 500; color: var(--ink-2); line-height: 1.35; }
+  .gauge-name small { display: block; font-size: 11.5px; color: var(--muted); font-weight: 400; }
+  .gauge-track {
+    position: relative; height: 30px; background: var(--sunken);
+    border-radius: 3px; overflow: hidden;
+  }
+  .gauge-fill { position: absolute; inset: 0 auto 0 0; border-radius: 3px 0 0 3px; }
+  .gauge-fill.safe { background: var(--good); }
+  .gauge-fill.edge { background: var(--crit); }
+  .gauge-val {
+    position: absolute; top: 50%; transform: translateY(-50%);
+    font-family: "IBM Plex Mono", monospace; font-size: 12px; font-weight: 500;
+    color: var(--surface); left: 10px; letter-spacing: .01em;
+  }
+  .gauge-val.outside { color: var(--ink-2); }
+  .gate {
+    position: absolute; top: 0; bottom: 0; width: 2px; background: var(--ink);
+    opacity: .55;
+  }
+  .gauge-scale {
+    display: flex; justify-content: space-between; font-family: "IBM Plex Mono", monospace;
+    font-size: 11px; color: var(--muted); border-top: 1px solid var(--rule-2);
+    padding-top: 8px; margin-top: 4px;
+  }
+
+  /* ---------- callout ---------- */
+  .callout {
+    border-left: 2px solid var(--accent); background: var(--surface);
+    padding: 16px 20px; margin: 22px 0; border-radius: 0 4px 4px 0;
+    font-size: 15.5px; color: var(--ink-2); box-shadow: var(--shadow);
+  }
+  .callout.warn { border-left-color: var(--crit); }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout .label {
+    display: block; font-size: 11px; font-weight: 600; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--accent); margin-bottom: 7px;
+  }
+  .callout.warn .label { color: var(--crit); }
+
+  /* ---------- figures ---------- */
+  figure { margin: 26px 0 8px; }
+  figure img {
+    width: 100%; height: auto; display: block; border: 1px solid var(--rule);
+    border-radius: 4px; background: #fcfcfb;
+  }
+  figcaption { font-size: 12.5px; color: var(--muted); padding-top: 9px;
+               font-family: "IBM Plex Sans", sans-serif; }
+
+  ul { margin: 0 0 17px; padding-left: 1.15em; }
+  li { margin-bottom: 9px; }
+  li::marker { color: var(--muted); }
+
+  footer {
+    margin-top: 64px; padding-top: 22px; border-top: 1px solid var(--rule);
+    font-size: 13px; color: var(--muted);
+    font-family: "IBM Plex Sans", sans-serif;
+  }
+  footer a { color: var(--muted); }
+
+  @media (max-width: 620px) {
+    .sec-head { flex-direction: column; gap: 2px; }
+    .sec-num { padding-top: 0; }
+    .gauge-row { grid-template-columns: 1fr; gap: 7px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+</style>
+
+<div class="wrap">
+
+<header class="masthead">
+  <p class="eyebrow">TikTok TechJam 2026 &middot; Track 3 &middot; Technical Report</p>
+  <h1>Making a Transformer layer faster without moving the answer</h1>
+  <p class="standfirst">Thirteen shapes graded on a hard per-element tolerance, and one shape whose
+  reference implementation needs 20.5&nbsp;terabytes of attention scores and therefore cannot run at all.</p>
+
+  <div class="kpis">
+    <div class="kpi">
+      <p class="kpi-label">Shapes passing</p>
+      <p class="kpi-value">13 / 13</p>
+      <p class="kpi-note">zero failing elements, both GPUs</p>
+    </div>
+    <div class="kpi">
+      <p class="kpi-label">Median speedup</p>
+      <p class="kpi-value">__MEDIAN__&times;</p>
+      <p class="kpi-note">__RANGE__ on a free Tesla T4</p>
+    </div>
+    <div class="kpi">
+      <p class="kpi-label">Tolerance margin</p>
+      <p class="kpi-value">1049&times;</p>
+      <p class="kpi-note">inside the <code>atol=0.002</code> gate</p>
+    </div>
+    <div class="kpi">
+      <p class="kpi-label">Shape 14</p>
+      <p class="kpi-value">20.5 TB</p>
+      <p class="kpi-note">what the baseline would need; ours runs it in 14.6&nbsp;GB</p>
+    </div>
+  </div>
+</header>
+
+<section>
+  <div class="sec-head"><span class="sec-num">01</span><h2>The contract we are graded against</h2></div>
+  <div class="col">
+    <p>The harness swaps a <code>UserOptimizedTransformer</code> in for the reference
+    <code>BaselineTransformer</code> and compares them across 14 shapes. An entry passes a
+    trial only if <strong>every</strong> output element satisfies
+    <code>abs_err &le; 0.002</code> <strong>or</strong> <code>rel_err &le; 0.02</code>.
+    One failing element fails the shape. Any <code>NaN</code> or <code>Inf</code> is a hard
+    fail. Latency is only measured if accuracy passes first, so speed is worth nothing
+    without correctness.</p>
+
+    <p>Weights are copied with <code>strict=True</code>, so we keep every baseline submodule
+    and parameter name and rewrite only the forward compute. Nothing is added to the
+    <code>state_dict</code>; the comparison stays apples to apples.</p>
+
+    <p>That <em class="term">or</em> in the tolerance rule matters more than it looks, and it
+    comes back in section 5.</p>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="sec-num">02</span><h2>The wall at 100,000 tokens</h2></div>
+  <div class="col">
+    <p>The baseline computes attention the explicit way: materialize
+    <code>scores = Q&middot;K&#7488;</code> with shape <code>[B, H, S, S]</code>. For shape 14
+    that is 32 &times; 16 &times; 10&#8309; &times; 10&#8309; = 5.12&times;10&sup1;&sup2; elements
+    &mdash; about <strong>20.5 TB</strong> in fp32. No GPU holds that. The baseline does not run
+    slowly on this shape; it does not run.</p>
+  </div>
+
+  <figure>
+    <img alt="Log-scale bar chart of baseline attention-score memory per shape. Shapes 1 to 13 sit between roughly a megabyte and 2.6 gigabytes, all under a dashed 16 GB line. Shape 14 towers four orders of magnitude above it at 20,480 GB, drawn in red and labelled: cannot run." src="data:image/png;base64,__FIG_MEMWALL__">
+    <figcaption>Every graded shape fits in a free 16&nbsp;GB card. Shape 14 misses by four orders of magnitude.</figcaption>
+  </figure>
+
+  <div class="col">
+    <p><code>F.scaled_dot_product_attention</code> never materializes that matrix. Same
+    mathematics, <code>O(S)</code> memory instead of <code>O(S&sup2;)</code>. On the graded hot
+    path there is no padding, so causality goes through <code>is_causal=True</code> with
+    <code>attn_mask=None</code> and the mask is generated inside the kernel &mdash; which is the
+    only option available, since a dense <code>[S, S]</code> mask at <code>S=100000</code> would
+    itself be 10&nbsp;GB.</p>
+
+    <p>That gets the attention inside memory. It did not get the shape to run, and the reason
+    was somewhere else entirely.</p>
+  </div>
+
+  <div class="callout warn">
+    <span class="label">The bug was in the concat</span>
+    <p>Batch-chunking the forward and collecting the pieces in a list ends with
+    <code>torch.cat</code>, which holds the chunks <em class="term">and</em> the joined
+    <code>[32, 100000, 1024]</code> result at the same time &mdash; a second ~6.5&nbsp;GB
+    allocation on a card that already had the 6.5&nbsp;GB input resident. The failure read as
+    <code>Tried to allocate 6.10 GiB</code> and looked like an attention problem. Writing each
+    chunk straight into a preallocated output removed the second copy, and the shape ran.</p>
+  </div>
+
+  <div class="col">
+    <p>The chunk size is planned from VRAM that is actually free at runtime
+    (<code>cuda.mem_get_info</code> plus the allocator's reserved-but-unused blocks), minus the
+    output buffer, divided by the roughly eight activations a block keeps live at once. If the
+    estimate is still optimistic, the chunk halves and the pass restarts, so a bad guess
+    degrades instead of failing.</p>
+
+    <p><strong>Result on a free 16&nbsp;GB P100:</strong> the full-length forward completes in
+    293&nbsp;s at 10,907&nbsp;tokens/s, peaking at 14.61&nbsp;GB of a 17.06&nbsp;GB card, with
+    <code>chunk_bs=1</code>.</p>
+
+    <p>That run is fp16, and for this shape that is forced rather than chosen: an fp32 input is
+    32 &times; 100000 &times; 1024 &times; 4&nbsp;B = 13.1&nbsp;GB and the output is another
+    13.1&nbsp;GB &mdash; 26.2&nbsp;GB committed before a single activation. Correctness for this
+    shape is established separately, in fp32, at a truncated <code>seq_len</code> where the
+    baseline can run: PASS at <code>max_abs 1.2e-6</code>. SDPA's mathematics does not depend on
+    <code>S</code>.</p>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="sec-num">03</span><h2>What actually made the other thirteen faster</h2></div>
+  <div class="col">
+    <p>Every stage is selected by an environment variable with no code edits, so the ablation
+    and the delivered path are literally the same code. Four shapes, four stages, measured on a
+    T4:</p>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <caption>Speedup by stage. Baseline milliseconds are the reference implementation on the same card.</caption>
+      <thead>
+        <tr>
+          <th>Shape</th><th>Stresses</th><th class="n">Baseline ms</th>
+          <th class="n">SDPA</th><th class="n">+compile</th><th class="n">+fp16</th><th class="n">+both</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td class="mono">1</td><td>compute</td><td class="n mono">9.4</td>
+            <td class="n mono">2.01&times;</td><td class="n mono">2.33&times;</td><td class="n mono">3.71&times;</td><td class="n mono win">5.61&times;</td></tr>
+        <tr><td class="mono">12</td><td>launch overhead</td><td class="n mono">3.4</td>
+            <td class="n mono">2.29&times;</td><td class="n mono bad">1.46&times;</td><td class="n mono">1.42&times;</td><td class="n mono win">2.86&times;</td></tr>
+        <tr><td class="mono">8</td><td>GEMM / wide FFN</td><td class="n mono">118.9</td>
+            <td class="n mono">1.07&times;</td><td class="n mono">1.05&times;</td><td class="n mono win">3.80&times;</td><td class="n mono">3.80&times;</td></tr>
+        <tr><td class="mono">13</td><td>long sequence</td><td class="n mono">313.6</td>
+            <td class="n mono">4.68&times;</td><td class="n mono">4.63&times;</td><td class="n mono win">11.57&times;</td><td class="n mono">11.54&times;</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="col">
+    <p>Three things in that table are worth saying out loud.</p>
+    <ul>
+      <li><strong>SDPA is the whole story on long sequences.</strong> Shape 13 gets 4.68&times;
+      from memory-efficient attention alone; nothing later adds to it except precision.</li>
+      <li><strong><code>torch.compile</code> is not free.</strong> It helps the compute-bound
+      shape and it <em class="term">hurts</em> the launch-bound one, 2.29&times; down to
+      1.46&times;. Shape 12 is 3.4&nbsp;ms of nearly pure kernel-launch overhead, and Inductor's
+      guard and dispatch cost is a real fraction of that.</li>
+      <li><strong>The stages are not additive.</strong> On shapes 8 and 13 compile contributes
+      nothing once fp16 is on. On shape 12 the two only pay off together.</li>
+    </ul>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="sec-num">04</span><h2>Results across two free GPUs</h2></div>
+  <div class="col">
+    <p>Kaggle's API hands out a Tesla P100 unless <code>machine_shape</code> asks otherwise. That
+    card is <code>sm_60</code>: Triton will not build, so <code>torch.compile</code> never
+    engages, and SDPA falls back to its memory-efficient backend rather than FlashAttention.
+    Asking for <code>NvidiaTeslaT4</code> lights up the full stack.</p>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <caption>All three regimes pass every gradeable shape. The third one is not shipped &mdash; see section 5.</caption>
+      <thead>
+        <tr><th>Regime</th><th class="n">Median</th><th class="n">Range</th>
+            <th class="n">Worst max_abs</th><th class="n">Margin vs atol</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>P100 <span class="mono">sm_60</span> &mdash; SDPA only</td>
+            <td class="n mono">2.065&times;</td><td class="n mono">1.098&ndash;4.001&times;</td>
+            <td class="n mono">1.91e-6</td><td class="n mono ok">1049&times;</td></tr>
+        <tr class="hi"><td><strong>T4 <span class="mono">sm_75</span> &mdash; SDPA + compile (shipped)</strong></td>
+            <td class="n mono">__MEDIAN__&times;</td><td class="n mono">__RANGE__</td>
+            <td class="n mono">1.91e-6</td><td class="n mono ok">1049&times;</td></tr>
+        <tr><td>T4 + fp16 <span class="mono">(opt-in)</span></td>
+            <td class="n mono">4.014&times;</td><td class="n mono">1.320&ndash;11.528&times;</td>
+            <td class="n mono">2.04e-3</td><td class="n mono bad">0.98&times;</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <figure>
+    <img alt="Grouped bar chart of median speedup for shapes 1 through 13, comparing Tesla P100 in blue against Tesla T4 in orange. Most T4 bars are taller. Shape 13 is the tallest pair, and shape 12 is the one shape where the P100 bar exceeds the T4 bar." src="data:image/png;base64,__FIG_SPEEDUPS__">
+    <figcaption>Per-shape median speedup on both cards, fp32 grading. Shape 12, the launch-bound one, is the single case where compilation makes things worse.</figcaption>
+  </figure>
+
+  <div class="callout">
+    <span class="label">A ratio has two sides</span>
+    <p>The T4's <em class="term">baselines</em> are slower than the P100's &mdash; 316.8&nbsp;ms
+    against 168.6&nbsp;ms on shape 13. The P100 has more fp32 throughput and roughly twice the
+    memory bandwidth. Our ratios improve on the T4 anyway, because the optimized path gains
+    compilation and FlashAttention there while the baseline stays bandwidth-bound. Worth stating
+    which side moved rather than banking the bigger number.</p>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="sec-num">05</span><h2>fp16 is nearly twice as fast. We ship fp32.</h2></div>
+  <div class="col">
+    <p>Turning on internal fp16 (<code>T3_AUTOCAST=fp16</code>) passes all 13 shapes at a median
+    <strong>4.014&times;</strong>, up to 11.53&times; on shape 13. It is one environment variable.
+    We ship it off, and the reason is a single number.</p>
+  </div>
+
+  <div class="gauge">
+    <div class="gauge-row">
+      <div class="gauge-name">fp32 &mdash; shipped
+        <small>worst <span class="mono">max_abs</span> 1.91e-6</small></div>
+      <div class="gauge-track">
+        <div class="gauge-fill safe" style="width:33%"></div>
+        <div class="gate" style="left:calc(100% - 2px)"></div>
+        <span class="gauge-val">1049&times; inside the gate</span>
+      </div>
+    </div>
+    <div class="gauge-row">
+      <div class="gauge-name">fp16 &mdash; opt-in
+        <small>worst <span class="mono">max_abs</span> 2.04e-3</small></div>
+      <div class="gauge-track">
+        <div class="gauge-fill edge" style="width:100%"></div>
+        <div class="gate" style="left:calc(100% - 2px)"></div>
+        <span class="gauge-val">0.98&times; &mdash; already past it</span>
+      </div>
+    </div>
+    <div class="gauge-scale">
+      <span>error &rarr;</span>
+      <span>atol = 0.002</span>
+    </div>
+  </div>
+
+  <div class="col">
+    <p>The fp16 worst case is <code>max_abs = 0.0020388</code>, on shape 6. That has
+    <strong>already crossed</strong> <code>atol = 0.002</code>. It passes only because the gate
+    is <code>abs &le; 0.002</code> <strong>or</strong> <code>rel &le; 0.02</code>, and that
+    particular element happened to have a reference value large enough
+    (<code>|ref| &ge; 0.102</code>) for the relative branch to catch it.</p>
+
+    <p>Nothing makes that repeatable. Put the same error on a near-zero reference and the element
+    fails &mdash; and one failing element fails the shape and forfeits the speed score entirely.
+    The trade is roughly twice the speed for a correctness margin of essentially zero on a hard
+    gate. We took the 2.36&times; that sits 1049&times; inside tolerance and left fp16 as a
+    documented, measured flag.</p>
+  </div>
+
+  <div class="callout warn">
+    <span class="label">Where we were wrong</span>
+    <p>The repository previously asserted that fp16 &ldquo;breaks the strict
+    <code>atol=0.002</code> gate&rdquo;. Measuring it showed that is false &mdash; fp16 passes all
+    thirteen shapes. The conclusion survived; the justification did not. The real reason to ship
+    fp32 is margin, not failure, and we only know that because we ran it.</p>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="sec-num">06</span><h2>Two things that look like defects and are not</h2></div>
+  <div class="col">
+    <h3><code>--dtype bfloat16</code> fails the gate</h3>
+    <p>It does: 6131 of 131072 elements, <code>max_abs 0.047</code>. So does the reference
+    compared against <em class="term">itself</em> recomputed in fp32 &mdash; 7603 elements, the
+    identical <code>max_abs</code>. bf16's ulp near 1.0 is 0.0078, four times coarser than
+    <code>atol=0.002</code>, so no implementation that reorders a single operation can hold that
+    gate in bf16. The graded configuration is fp32, where we sit three orders of magnitude
+    inside it.</p>
+
+    <h3>The padded path rebuilds an <code>O(S&sup2;)</code> tensor</h3>
+    <p>True. When a real padding mask is supplied, the fallback materializes a dense
+    <code>[B, 1, S, S]</code> additive bias, giving back exactly the memory SDPA exists to avoid.
+    The graded path runs <code>padding_ratio=0</code>, where masking is kernel-generated and no
+    bias is built, so the fallback only has to be correct at the small <code>S</code> where a
+    mask is actually supplied. Making it memory-efficient too is unfinished work, not a solved
+    problem we left out.</p>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="sec-num">07</span><h2>Reproducing this</h2></div>
+  <div class="col">
+    <p>Development happened on a laptop with an Intel iGPU and no NVIDIA card, so every GPU run
+    was pushed headlessly to Kaggle and pulled back. The numbers above come from that path, and
+    the raw kernel logs are committed beside the tables so each figure traces to the run that
+    produced it.</p>
+
+<pre><code>python scripts/build_kaggle_selfcontained.py --accelerator NvidiaTeslaT4
+kaggle kernels push  -p .kaggle_upload/kernel_sc
+kaggle kernels output wenjiluo/track3-bench -p .kaggle_out
+python scripts/parse_kaggle_log.py .kaggle_out/track3-bench.log</code></pre>
+
+    <p>The builder inlines the unmodified harness, the optimized model and the sweep driver into
+    a single script, so the kernel needs no dataset attached. On a machine that already has a
+    GPU, the same model runs under the official harness directly with
+    <code>python run_all.py --shapes 1-13 --device cuda --dtype float32</code>.</p>
+
+    <div class="callout">
+      <span class="label">One trap worth documenting</span>
+      <p>The accepted <code>machine_shape</code> values &mdash; <code>NvidiaTeslaT4</code>,
+      <code>NvidiaTeslaP100</code>, <code>Tpu1VmV38</code> &mdash; appear only in the SDK
+      docstring for <code>ApiSaveKernelRequest</code>. An unrecognised value is silently
+      normalised back to a generic <code>"Gpu"</code> and lands on a P100, so a wrong guess looks
+      exactly like a successful request. Verify by reading the device name back out of the
+      running kernel.</p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <p>Track 3 &middot; TikTok TechJam 2026 &middot; measured on free Kaggle Tesla P100 and T4 GPUs, fp32 grading.
+  Source, raw logs and per-shape data: <a href="https://github.com/LUOaini1213/tiktok-techjam-2026-track3">github.com/LUOaini1213/tiktok-techjam-2026-track3</a></p>
+</footer>
+
+</div>
