@@ -89,70 +89,117 @@ track3-submission.zip
 
 ## 10. About the project（项目正文）
 
-**Devpost 的正文编辑器支持 Markdown。把下面分隔线之间的全部内容原样复制粘贴进去。**
+**Devpost 的正文编辑器支持 Markdown 和 LaTeX 数学公式。把下面分隔线之间的全部内容
+原样复制粘贴进去** —— 包括 `$...$` 和 `$$...$$`，Devpost 会把它们渲染成公式。
+
+> 粘贴后请**扫一眼公式有没有渲染出来**。万一没渲染（显示成 `$...$` 原文），
+> 内容依然读得通 —— 每个公式旁边的句子都自带解释，不存在「公式挂了就看不懂」的段落。
+> 真要救急，把 `$$...$$` 整段删掉也不影响文章成立。
 
 ---8<--- 从这里开始复制 ---8<---
 
 ## Inspiration
 
-The task looked like a speed contest and turned out to be a correctness contest. The grader checks **every single output element** — `abs_err ≤ 0.002` **OR** `rel_err ≤ 0.02` — and one failing element fails the whole shape and forfeits the speed score entirely. So the interesting question was never "how fast can this go", it was "how fast can this go while the answer provably does not move".
+The task reads like a speed contest. It is a correctness contest with a speed prize attached.
 
-Then we read the shape list. Shape 14 asks for `seq_len = 100,000`, and the reference implementation materializes its attention scores explicitly: `[32, 16, 100000, 100000]` = 5.12×10¹² elements ≈ **20.5 TB** in fp32. No GPU holds that. The baseline does not run slowly on that shape — it does not run. That is the shape we wanted.
+The grader checks **every single output element**, and an element passes only if
+
+$$|o_i - r_i| \le 0.002 \quad\textbf{or}\quad |o_i - r_i| \le 0.02\,|r_i|$$
+
+One failing element fails the whole shape, and a failed shape forfeits its speed score entirely. So the interesting question was never "how fast can this go" — it was "how fast can this go while the answer provably does not move".
+
+Then we read the shape list. Shape 14 asks for $S = 100{,}000$, and the reference implementation materializes its attention scores explicitly as a $[B, H, S, S]$ tensor:
+
+$$32 \cdot 16 \cdot (10^5)^2 \cdot 4\ \text{bytes} \;=\; 2.05 \times 10^{13}\ \text{bytes} \;\approx\; \mathbf{20.5\ TB}$$
+
+No GPU holds that. The baseline does not run *slowly* on shape 14 — it does not run. That is the shape we wanted.
 
 ## What it does
 
-**ExactSwap** is a drop-in replacement for the reference `BaselineTransformer`. It subclasses it, keeps every submodule and parameter name, and rewrites only the forward compute — so the official `copy_model_weights(..., strict=True)` succeeds and the comparison is apples to apples with zero friction.
+**ExactSwap** is a drop-in replacement for the reference `BaselineTransformer`. It subclasses it, keeps every submodule and parameter name, and rewrites only the forward compute — so the official `copy_model_weights(..., strict=True)` succeeds and the comparison is apples to apples.
 
-**On a free Kaggle Tesla T4, fp32 grading: 13/13 gradeable shapes PASS, median speedup 2.282× (1.086×–4.439×), worst absolute error 1.91e-6 — about 1049× inside the tolerance gate.**
+**On a free Kaggle Tesla T4 under fp32 grading: 13/13 gradeable shapes PASS, median speedup 2.282× (range 1.086×–4.439×), worst absolute error $1.91\times10^{-6}$.** That is a factor of
 
-**And shape 14 runs.** The full 100,000-token forward completes in **204 s at 15,676 tokens/s, peaking at 14.58 GB** — on a card that only has 15.64 GB in total. Against a reference that needs 20.5 TB and cannot execute at all, the meaningful result is not a ratio; it is the difference between *cannot run* and *runs*.
+$$\frac{0.002}{1.91 \times 10^{-6}} \approx 1049$$
 
-Three levers, all selectable by environment variable with no code edits, so the ablation and the delivered path are literally the same code:
+inside the tolerance gate.
 
-1. **`F.scaled_dot_product_attention`** — `O(S)` memory instead of the baseline's `O(S²)`. The score matrix is never built. Causality goes through `is_causal=True`, generated inside the kernel, because a dense `[S,S]` mask at `S=100,000` would be 10 GB on its own.
-2. **Self-applied `torch.compile`** — the model compiles itself on first forward, so the speedup does not depend on the grader passing `--compile-user`. Needs `sm ≥ 7.0`.
-3. **VRAM-planned batch chunking** — the chunk size is computed from the memory *actually free at runtime* (`cuda.mem_get_info` plus the allocator's reserved-but-unused blocks) minus the output buffer, and halves and retries if that estimate was optimistic.
+**And shape 14 runs.** The full 100,000-token forward completes in **204 s at 15,676 tokens/s, peaking at 14.58 GB** — on a card that only has 15.64 GB in total. Against a reference needing 20.5 TB, the meaningful result is not a ratio; it is the difference between *cannot run* and *runs*.
+
+Three levers, each selectable by environment variable with no code edits, so the ablation and the delivered path are literally the same code:
+
+1. **`F.scaled_dot_product_attention`** — $O(S)$ memory instead of the baseline's $O(S^2)$. The score matrix is never built. Causality goes through `is_causal=True`, generated inside the kernel, because a dense $[S,S]$ mask at $S = 10^5$ is $10^{10}$ bytes on its own.
+2. **Self-applied `torch.compile`** — the model compiles itself on the first forward, so the speedup does not depend on the grader passing `--compile-user`. Requires $\text{sm} \ge 7.0$.
+3. **VRAM-planned batch chunking** — the chunk size is solved for at runtime rather than tuned:
+
+$$n_{\text{chunk}} \;=\; \left\lfloor \frac{0.6\,\bigl(M_{\text{free}} - M_{\text{out}}\bigr)}{b \cdot k \cdot S \cdot \max(D, F)} \right\rfloor$$
+
+with $M_{\text{free}}$ from `cuda.mem_get_info` plus the allocator's reserved-but-unused blocks, $b$ bytes per element, and $k \approx 8$ live intermediates per block. If that estimate is still optimistic, the chunk halves and the pass restarts.
 
 ## How we built it
 
-Development happened on a laptop with an Intel iGPU and **no NVIDIA card**. Every GPU run was pushed headlessly to Kaggle and pulled back: a builder inlines the unmodified harness, the optimized model and a sweep driver into one self-contained kernel, so nothing needs to be attached to the notebook.
+Development happened on a laptop with an Intel iGPU and **no NVIDIA card**. Every GPU run was pushed headlessly to Kaggle and pulled back: a builder inlines the unmodified harness, the optimized model and a sweep driver into a single self-contained kernel, so nothing needs to be attached to the notebook.
 
-**The three results that were not obvious going in:**
+**Three results that were not obvious going in:**
 
-**1. The shape-14 OOM was not in the attention.** After switching to fused attention, shape 14 still died with `Tried to allocate 6.10 GiB`. The fused kernel was fine. The failure was the last line: batch-chunking the forward and joining the pieces with `torch.cat` holds the chunks **and** the joined `[32, 100000, 1024]` result at the same time — a second ~6.5 GB allocation on a card that already had the 6.5 GB input resident. Writing each chunk straight into a preallocated output removed the copy, and the shape ran. The bug was one line away from where it appeared.
+**1. The shape-14 OOM was not in the attention.** After switching to fused attention, shape 14 still died with `Tried to allocate 6.10 GiB`. The fused kernel was fine. The failure was the last line: chunking the batch and joining the pieces with `torch.cat` holds the chunks **and** the joined $[32, 10^5, 1024]$ result simultaneously — a second $\approx 6.5$ GB allocation on a card that already had the 6.5 GB input resident. Writing each chunk straight into a preallocated output removed the copy, and the shape ran. The bug was one line away from where it appeared.
 
-**2. The Kaggle API silently gives you the wrong GPU.** `torch.compile`, real FlashAttention, and fp16 tensor cores were all listed as "not measured" for most of this project, because the API-allocated card is a Tesla **P100** (`sm_60`) where Triton will not build. The kernels API *does* let you choose — `machine_shape` / `--accelerator` — but the accepted values (`NvidiaTeslaT4`, `NvidiaTeslaP100`, `Tpu1VmV38`) appear only in the SDK docstring for `ApiSaveKernelRequest`, and **anything unrecognised is silently normalised back to a P100**. Our first two guesses looked like successful requests and were not. We confirmed the right value by pushing a throwaway kernel that just printed `get_device_name`.
+That run is fp16, and for this shape that is forced rather than chosen. In fp32 the input and output alone are
 
-**3. Two GPUs make an accidental ablation.** The same code scores 2.065× on the P100 (SDPA alone) and 2.282× on the T4 (SDPA + compile + FlashAttention). Worth saying out loud: the T4's *baselines* are **slower** than the P100's — 318.7 ms vs 168.6 ms on shape 13 — because the P100 has more fp32 throughput and roughly twice the memory bandwidth. Our ratio improves on the T4 anyway, because the optimized path picks up compilation and FlashAttention there while the baseline stays bandwidth-bound. A speedup is a ratio, and it matters which side moved.
+$$2 \cdot 32 \cdot 10^5 \cdot 1024 \cdot 4\ \text{bytes} \;=\; 26.2\ \text{GB} \;>\; 15.64\ \text{GB}$$
+
+committed before a single activation. Correctness for shape 14 is therefore established separately, in **fp32**, at a truncated $S$ where the reference still fits — PASS at `max_abs` $= 1.19	imes10^{-6}$ — and SDPA's mathematics does not depend on $S$.
+
+**2. The Kaggle API silently gives you the wrong GPU.** `torch.compile`, real FlashAttention and fp16 tensor cores were all marked "not measured" for most of this project, because the API-allocated card is a Tesla **P100** (`sm_60`) where Triton will not build. The kernels API *does* let you choose — `machine_shape` / `--accelerator` — but the accepted values (`NvidiaTeslaT4`, `NvidiaTeslaP100`, `Tpu1VmV38`) appear only in the SDK docstring for `ApiSaveKernelRequest`, and **anything unrecognised is silently normalised back to a P100**. Our first two guesses looked like successful requests and were not. We confirmed the right one by pushing a throwaway kernel that printed `get_device_name`.
+
+**3. Two GPUs make an accidental ablation.** The same code scores 2.065× on the P100 (SDPA alone) and 2.282× on the T4 (SDPA + compile + FlashAttention). Worth stating plainly: the T4's *baselines* are **slower** than the P100's — 318.7 ms against 168.6 ms on shape 13 — because the P100 has more fp32 throughput and roughly twice the memory bandwidth. Our ratio improves on the T4 anyway, because the optimized path gains compilation and FlashAttention there while the baseline stays bandwidth-bound. A speedup is a ratio, and it matters which side moved.
 
 ## Challenges we ran into
 
-**We shipped a claim we had never measured, and measuring it proved us wrong.** The repository asserted for most of its life that internal fp16 "breaks the strict `atol=0.002` gate". When we finally got a T4 and ran it, fp16 **passed all 13 shapes**, at a median **4.014×** — nearly double the shipped path. The assertion was false.
+**We shipped a claim we had never measured, and measuring it proved us wrong.** The repository asserted for most of its life that internal fp16 "breaks the strict $\texttt{atol}=0.002$ gate". Once we had a T4 and ran it, fp16 **passed all 13 shapes**, at a median **4.014×** — nearly double the shipped path. The assertion was simply false.
 
-The conclusion survived anyway, for a better reason. fp16's worst absolute error is `max_abs = 0.0020388` on shape 6 — it has **already crossed** `atol = 0.002`. It passes only because the gate is `abs ≤ 0.002` **OR** `rel ≤ 0.02`, and that particular element happened to have a reference value large enough (`|ref| ≥ 0.102`) for the relative branch to catch it. Nothing makes that repeatable: put the same error on a near-zero reference and the element fails, and one failing element forfeits the speed score. So the trade is roughly **2× more speed for a correctness margin of essentially zero** on a hard gate, against fp32's 1049×. We took the margin, and left fp16 as a documented, measured flag. **The conclusion was right and the reasoning behind it was wrong, and only running it revealed which.**
+The conclusion survived anyway, for a better reason. fp16's worst absolute error is $2.0388 \times 10^{-3}$ on shape 6, which has **already crossed** $\texttt{atol} = 2 \times 10^{-3}$. It passes only via the second branch of the gate, which requires
 
-**We ran an adversarial audit against our own documentation, and it found four wrong claims.** Multiple agents cross-checked every number in the README, report, ablation and Devpost draft against `results/*.csv` and the raw kernel logs, and every finding was independently verified before being accepted. Confirmed and fixed: shape 14's headline numbers were fp16 while every document framed the run as fp32; the Devpost draft credited speedups to "tensor cores + compilation" on a run where the GPU had neither; a "~2000× inside tolerance" figure was arithmetic on a number no shape actually hit (the real margin is ~1049×); and the README pointed at a `kernels/` directory that never existed. The audit also found a real bug in our own tooling — the log parser raised `NameError` on any log containing a shape-level error — and, with some irony, one audit agent triggered the exact hazard it had just reported by running `run_all.py` on this CPU-only machine and overwriting the committed GPU results. Nothing reached the remote, the file regenerates from the committed log exactly, and the script now refuses that write.
+$$0.02\,|r_i| \;\ge\; 2.0388\times10^{-3} \quad\Longrightarrow\quad |r_i| \;\ge\; 0.102$$
 
-**Two findings turned out not to be defects, and proving that mattered.** `--dtype bfloat16` fails the accuracy gate: 6131 of 131072 elements, `max_abs 0.047`. So does **the reference compared against itself** recomputed in fp32 — 7603 elements, identical `max_abs`. bf16's ulp near 1.0 is 0.0078, four times coarser than `atol=0.002`, so no implementation that reorders a single operation can hold that gate in bf16. It is a property of that configuration, not of our kernel; the graded configuration is fp32.
+— that element happened to have a large enough reference value. Nothing makes that repeatable: put the same error on a near-zero reference and the element fails, and one failing element forfeits the shape. The trade is therefore
+
+$$\underbrace{2\times \text{ speed}}_{\text{4.014}\times\text{ vs }2.282\times} \quad\text{for}\quad \underbrace{\frac{0.002}{2.0388\times10^{-3}} \approx 0.98}_{\text{margin, i.e. none}} \quad\text{instead of}\quad 1049$$
+
+We took the margin and left fp16 as a documented, measured flag. **The conclusion was right and the reasoning behind it was wrong, and only running it revealed which.**
+
+**We ran an adversarial audit against our own documentation, and it found four wrong claims.** Multiple agents cross-checked every number in the README, report, ablation and Devpost draft against `results/*.csv` and the raw kernel logs, and every finding was independently verified before being accepted. Confirmed and fixed: shape 14's headline numbers were fp16 while every document framed the run as fp32; the Devpost draft credited speedups to "tensor cores + compilation" on a run whose GPU had neither; a "$\approx 2000\times$ inside tolerance" figure was arithmetic on a number no shape actually hit (the real margin is $\approx 1049\times$); and the README pointed at a `kernels/` directory that never existed. The audit also found a real bug in our own tooling — the log parser raised `NameError` on any log containing a shape-level error — and, with some irony, one audit agent triggered the exact hazard it had just reported, by running the sweep on this CPU-only machine and overwriting the committed GPU results. Nothing reached the remote, the file regenerates from the committed log exactly, and the script now refuses that write.
+
+**Two findings turned out not to be defects, and proving that mattered.** `--dtype bfloat16` fails the gate: 6131 of 131072 elements, `max_abs` $= 0.047$. So does **the reference compared against itself** recomputed in fp32 — 7603 elements, identical `max_abs`. The reason is arithmetic, not implementation:
+
+$$\mathrm{ulp}_{\text{bf16}}(1.0) = 2^{-7} \approx 0.0078 \;\;\gg\;\; \texttt{atol} = 0.002$$
+
+bf16 cannot represent the gate's own precision, so no implementation that reorders a single operation can hold it. That is a property of the configuration; the graded configuration is fp32.
 
 ## Accomplishments that we're proud of
 
 Turning an infeasible shape into a running one, on a *free* GPU, from a laptop with no GPU at all.
 
-But more than the speedup: **declining the 4.01× we had already measured.** It passed every test in front of us. It would have looked better on a leaderboard. It sits at 0.98× of a hard gate, and shipping it would have been a coin flip dressed as a result.
+But more than the speedup: **declining the 4.014× we had already measured.** It passed every test in front of us and would have looked better on a leaderboard. It sits at $0.98\times$ of a hard gate, and shipping it would have been a coin flip dressed up as a result.
 
-And the negative results are first-class citizens of the repository. `torch.compile` *hurts* the launch-bound shape (2.29× → 1.46×) and is a wash on the GEMM-bound one. The stage ablation is 4 shapes × 4 configurations with every number published, including the ones that did not help.
+And the negative results are first-class citizens of the repository. `torch.compile` *hurts* the launch-bound shape ($2.29\times \to 1.46\times$) and is a wash on the GEMM-bound one. The stage ablation is 4 shapes $\times$ 4 configurations with every number published, including the ones that did not help.
 
 ## What we learned
 
-- **Read the grading contract before optimizing.** The `abs OR rel` structure is why a `max_rel` of 200,000 can be a completely healthy result — it is computed over near-zero references — and why a `max_abs` of 0.00204 is disqualifying even though the shape passed.
+- **Read the grading contract before optimizing anything.** The $\textbf{or}$ in the gate is why a reported `max_rel` of $2 \times 10^5$ can be a perfectly healthy result — it is computed as
+
+$$\text{max\_rel} = \max_i \frac{|o_i - r_i|}{\max(|r_i|, 10^{-12})}$$
+
+over near-zero references — and why a `max_abs` of $2.04\times10^{-3}$ is disqualifying even on a shape that passed.
 - **A memory bug can surface one line away from its cause.** The OOM appeared in the attention and lived in the concat.
-- **Cheap infrastructure facts dominate expensive optimization work.** One undocumented string, `NvidiaTeslaT4`, was worth more than any kernel change we made — it unlocked three levers at once.
+- **Cheap infrastructure facts dominate expensive optimization work.** One undocumented string, `NvidiaTeslaT4`, was worth more than any kernel change we made: it unlocked three levers at once.
 - **Audit your own claims adversarially.** Four of ours were wrong, and all four had survived several careful re-readings by the people who wrote them.
 
 ## What's next
 
-Hand-written Triton kernels — a fused LayerNorm+residual and a fused bias+GELU epilogue — beyond what Inductor already fuses; a Turing-specific FlashAttention kernel is a multi-day effort we scoped and did not attempt. The padded fallback still materializes a dense `[B,1,S,S]` bias, giving back exactly the memory SDPA exists to avoid; the graded path never takes it, but making it memory-efficient is unfinished work rather than a solved problem. And the obvious experiment we ran out of time for: a mixed assignment — fp16 matmuls with selected fp32 stages — that keeps most of the 2× while restoring real tolerance margin.
+Hand-written Triton kernels — a fused LayerNorm+residual and a fused bias+GELU epilogue — beyond what Inductor already fuses; a Turing-specific FlashAttention kernel is a multi-day effort we scoped and did not attempt. The padded fallback still materializes a dense $[B,1,S,S]$ bias, giving back exactly the $O(S^2)$ memory SDPA exists to avoid; the graded path never takes it, but making it memory-efficient is unfinished work rather than a solved problem.
+
+And the experiment we ran out of time for: a mixed assignment — fp16 matmuls with selected fp32 reductions — that keeps most of the $2\times$ while restoring a real margin. Somewhere between $0.98\times$ and $1049\times$ there is a configuration worth shipping.
 
 ---8<--- 复制到这里为止 ---8<---
 
