@@ -42,6 +42,17 @@ def load_stdout(path):
     return "".join(e["data"] for e in events if e.get("stream_name") == "stdout")
 
 
+def _round(entry, sig=6):
+    """Trim float reprs (1.1920928955078125e-06) to a readable precision."""
+    out = dict(entry)
+    for key in ("max_abs", "max_rel"):
+        try:
+            out[key] = f"{float(out[key]):.{sig}g}"
+        except (TypeError, ValueError):
+            pass
+    return out
+
+
 def parse_summary_block(text):
     """The driver ends with a compact CSV block; prefer it when present.
 
@@ -93,7 +104,7 @@ def main():
                "pass": "", "max_abs": "", "max_rel": "", "baseline_ms": "",
                "opt_ms": "", "speedup": "", "notes": ""}
         if summary and idx in summary:
-            row.update(summary[idx])
+            row.update(_round(summary[idx]))
         else:
             sm = SUMMARY_RE.search(blk)
             if sm:
@@ -122,9 +133,10 @@ def main():
         if mr: row14["max_rel"] = mr.group(1)
         if ma: row14["max_abs"] = ma.group(1)
     if summary and 14 in summary:
+        s14 = _round(summary[14])
         for k in ("pass", "max_abs", "max_rel"):
-            if summary[14][k]:
-                row14[k] = summary[14][k]
+            if s14[k]:
+                row14[k] = s14[k]
         if summary[14]["notes"]:
             row14["notes"] = summary[14]["notes"]
     if full:

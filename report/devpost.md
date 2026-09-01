@@ -1,14 +1,15 @@
 # Devpost submission — Track 3: Implement a GPU Kernel for a Transformer Layer
 
-> Paste into the Devpost project description. Replace [PLACEHOLDER]s with the
-> numbers from results/results.csv after the cloud run.
+> Paste into the Devpost project description. All numbers below are the measured
+> Kaggle P100 run committed in results/results.csv and results/kaggle_p100_run.log.
 
 ## Elevator pitch
-A drop-in, numerically-faithful GPU-optimized Transformer layer that is a
-**1.96× median (up to 4.01×)** faster than the reference across the official
+A drop-in, numerically-faithful GPU-optimized Transformer layer that is
+**2.07× median (up to 4.00×)** faster than the reference across the official
 shapes — with all 13 gradeable shapes passing exactly (max_abs ≈ 1e-6) — and it
-turns the `seq_len=100000` case from **impossible into possible** (the baseline
-needs ~20.5 TB just for its attention scores).
+turns the `seq_len=100000` case from **impossible into possible**: the baseline
+needs ~20.5 TB just for its attention scores, ours completes that forward in
+**14.6 GB on a free Kaggle P100**.
 
 ## How our solution addresses the problem statement
 The task: optimize the runtime of a Transformer forward pass on a GPU while
@@ -42,14 +43,15 @@ levers:
   official harness; no external data.
 
 ## Results
-- Median speedup across shapes 1–13: **1.96×** (range 1.09×–4.01×), all PASS at
+- Median speedup across shapes 1–13: **2.07×** (range 1.10×–4.00×), all PASS at
   `atol=0.002 / rtol=0.02`, `max_abs ≈ 1e-6`. GPU: **free Kaggle Tesla P100**,
-  torch 2.5.1+cu121 — from SDPA alone (P100 has no Triton/`torch.compile`; a T4
-  run with compilation enabled is higher still).
-- Shape 14 (`seq_len=100000`): baseline infeasible (~20.5 TB scores); correctness
-  validated by construction at a truncated length (PASS, max_abs 1.2e-6); the
-  full length runs on a FlashAttention-capable GPU (sm_75+).
-- Full table + ablation: see the GitHub repo (`results/`).
+  torch 2.5.1+cu121 — from SDPA alone (P100 is sm_60: no Triton/`torch.compile`
+  and no true FlashAttention kernel, so a T4/A100 would be higher still).
+- Shape 14 (`seq_len=100000`): baseline infeasible (~20.5 TB of scores). Ours
+  **runs it**: 293 s per forward, 10,907 tok/s over 3.2 M tokens, peak **14.6 GB**.
+  Correctness validated at a truncated length where the baseline can run (PASS,
+  max_abs 1.2e-6).
+- Full table, ablation and the raw kernel log: see the GitHub repo (`results/`).
 
 ## Challenges
 - The correctness gate is per-element with zero tolerance for outliers, and

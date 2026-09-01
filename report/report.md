@@ -9,7 +9,7 @@
 | | |
 |---|---|
 | **Development machine** | Intel Core i5-14500, 16 GB RAM, **Intel UHD 770 iGPU only (no NVIDIA GPU)**, Windows 11, Python 3.13. Used for authoring, the repo, this report, and the demo video — no GPU compute. |
-| **Benchmark GPU(s)** | Free **Kaggle Tesla P100-PCIE** (16 GB, sm_60), driven headlessly via the Kaggle API from the local machine. torch 2.5.1+cu121 (the preinstalled 2.10+cu128 dropped sm_60, so the kernel auto-installs a compatible build and re-execs). A T4 (sm_75) run enables `torch.compile` and full-length shape 14 — numbers appended when available. |
+| **Benchmark GPU(s)** | Free **Kaggle Tesla P100-PCIE** (16 GB, sm_60), driven headlessly via the Kaggle API from the local machine. torch 2.5.1+cu121 (the preinstalled 2.10+cu128 dropped sm_60, so the kernel auto-installs a compatible build and re-execs). The full-length shape 14 runs on this P100; a T4/A100 (sm_75+) would additionally enable `torch.compile` and the true FlashAttention kernel. Raw log: `results/kaggle_p100_run.log`. |
 | **Why cloud** | Track 3 is a GPU-kernel task; `CUDA`/`Triton`/tensor cores require an NVIDIA GPU. Free cloud GPUs (Colab is an explicitly allowed dev tool) were used and are reported honestly here. |
 
 ## 2. The problem and the grading contract
@@ -57,24 +57,37 @@ and `user_optimized.py`.
 
 On a free Kaggle P100 (fp32 grading), **all 13 gradeable shapes PASS** with
 `max_abs ≈ 1e-6` (a faithful reproduction of the fp32 reference), and a **median
-speedup of 1.96×** (min 1.09×, max **4.01×** on the long-sequence shape 13) —
+speedup of 2.07×** (min 1.10×, max **4.00×** on the long-sequence shape 13) —
 from `scaled_dot_product_attention` alone, since `torch.compile` is unavailable
 on P100 (Triton needs sm≥7.0). Full table: `results/results.csv`; per-step
 breakdown: `results/ablation.md`.
 
 | # | shape [B,D,H,S,F] | speedup | | # | shape | speedup |
 |---|---|---|---|---|---|---|
-| 1 | 64,128,4,128 | 1.76× | | 8 | 64,1024,4,128 | 1.09× |
-| 2 | 1,128,4,128 | 2.27× | | 9 | 64,128,1,128 | 1.23× |
-| 3 | 4,128,4,128 | 1.96× | | 10 | 64,128,2,128 | 1.53× |
-| 4 | 16,128,4,128 | 2.21× | | 11 | 64,128,16,128 | 2.57× |
-| 5 | 128,128,4,128 | 1.78× | | 12 | 64,128,4,32 | 2.25× |
-| 6 | 10000,128,4,128 | 1.85× | | 13 | 64,128,4,1024 | **4.01×** |
-| 7 | 64,32,4,128 | 2.05× | | 14 | 32,1024,16,100000 | infeasible→runs |
+| 1 | 64,128,4,128 | 1.76× | | 8 | 64,1024,4,128 | 1.10× |
+| 2 | 1,128,4,128 | 2.14× | | 9 | 64,128,1,128 | 1.24× |
+| 3 | 4,128,4,128 | 2.17× | | 10 | 64,128,2,128 | 1.52× |
+| 4 | 16,128,4,128 | 2.29× | | 11 | 64,128,16,128 | 2.56× |
+| 5 | 128,128,4,128 | 1.78× | | 12 | 64,128,4,32 | 2.33× |
+| 6 | 10000,128,4,128 | 1.85× | | 13 | 64,128,4,1024 | **4.00×** |
+| 7 | 64,32,4,128 | 2.07× | | 14 | 32,1024,16,100000 | infeasible→**runs** |
 
-Shape 14: baseline needs ~20.5 TB for its scores (impossible); our SDPA path
-validates correctness at a truncated `seq_len` (PASS, `max_abs 1.2e-6`) and the
-full 100k length runs on a FlashAttention-capable GPU (sm_75+).
+**Shape 14 is the result we care most about.** The baseline needs ~20.5 TB for
+its scores and cannot run, so there is no ratio to report; the meaningful claim
+is that the shape goes from impossible to possible. Measured on the same free
+16 GB P100:
+
+```
+trunc S=2048 correctness: PASS max_abs=1.19e-06 max_rel=0.127
+vram free=16.64/17.06 GB | baseline scores would be 20.5 TB -> infeasible
+full S=100000: median=293376.9 ms | 10,907 tok/s | peak_vram=14.61 GB | chunk_bs=1
+```
+
+293 s per forward across 3.2 M tokens, peak 14.61 GB of the 17.06 GB card.
+Correctness is established at a truncated `seq_len` where the baseline can run
+(PASS, `max_abs 1.2e-6`); SDPA's math is independent of `S`, so that carries to
+1e5. Getting here required the memory fix in §4.4 — before it, the run died in
+the final `torch.cat`, not in the attention.
 
 Figures: `figures/memory_wall.png` (the 20.5 TB wall), `figures/speedups.png`
 (per-shape speedup).

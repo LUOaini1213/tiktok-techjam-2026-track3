@@ -12,9 +12,10 @@ venv/
 # Large / transient logs
 logs/
 *.log
+# ...except the committed evidence log the results table is read from
+!results/kaggle_p100_run.log
 .DS_Store
 .kaggle_upload/
-.kaggle_out/
-.kaggle_out2/
+.kaggle_out*/
 .kaggle_kernel_check/
 /track3_sc.py

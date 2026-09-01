@@ -9,7 +9,7 @@ output numerically identical to the reference implementation (per-element
 
 | Lever | Effect |
 |---|---|
-| **`F.scaled_dot_product_attention` (FlashAttention)** | Replaces the baseline's `O(S²)` materialized score matrix with an `O(S)` fused kernel. Makes the `seq_len=100000` shape possible at all — the baseline would need **~20.5 TB** just for its attention scores. |
+| **`F.scaled_dot_product_attention` (FlashAttention)** | Replaces the baseline's `O(S²)` materialized score matrix with an `O(S)` fused kernel. Makes the `seq_len=100000` shape possible at all — the baseline would need **~20.5 TB** just for its attention scores. Measured: the full 100k-token forward completes in **14.6 GB** on a free P100. |
 | **Internal fp16 autocast** (`T3_AUTOCAST=fp16`, **opt-in**) | Lights up the tensor cores. Off by default: across 4 layers, fp16 rounding pushes near-zero outputs past the *absolute* `atol=0.002` gate, and correctness outranks speed. Reductions stay in fp32. |
 | **Self-applied `torch.compile`** | Fuses LayerNorm / bias / GELU epilogues into Triton kernels; independent of the grader passing `--compile-user`. Per-shape mode (CUDA graphs for launch-bound shapes). Needs sm≥7.0, so it is *inactive* on the P100 the numbers below come from. |
 | **Batch chunking into a preallocated output** (only `seq_len=1e5`) | Keeps activations inside a 16 GB GPU. Chunks are written in place rather than collected and `torch.cat`-ed — the concat holds the pieces *and* the joined result at once, which is what made this shape OOM. |
@@ -28,7 +28,9 @@ run_all.py                       sweeps shapes 1–13 -> results/results.csv
 scripts/shape14_optimized_only.py  seq_len=1e5 timing + truncated-S correctness
 notebooks/colab_run.ipynb        shapes 1–13 on a free Colab T4
 notebooks/kaggle_shape14.ipynb   shape 14 on Kaggle T4/P100
-results/  report/  docs/AI_TOOLS.md
+results/results.csv             per-shape PASS / max_abs / speedup
+results/kaggle_p100_run.log     raw log of the run those numbers come from
+results/ablation.md  report/  docs/AI_TOOLS.md
 ```
 
 ## Setup
@@ -56,33 +58,53 @@ python scripts/shape14_optimized_only.py --trunc-seq 2048       # shape 14 (Kagg
 
 ## Results
 
-Measured on a **free Kaggle Tesla P100** (fp32 grading), full data in
-[`results/results.csv`](results/results.csv):
+Measured on a **free Kaggle Tesla P100** (16 GB, fp32 grading). Full data in
+[`results/results.csv`](results/results.csv); the raw kernel log is committed as
+[`results/kaggle_p100_run.log`](results/kaggle_p100_run.log).
 
-**13/13 gradeable shapes PASS · median speedup 1.96× · up to 4.01× · max_abs ≈ 1e-6.**
+**13/13 gradeable shapes PASS - median speedup 2.07x - up to 4.00x - max_abs ~1e-6 -
+and shape 14, which the baseline cannot run at all, completes at its full
+`seq_len=100000` inside 14.6 GB.**
 
 | # | B,D,H,S,F | pass | max_abs | baseline ms | opt ms | speedup |
 |---|---|---|---|---|---|---|
-| 1 | 64,128,4,128,128 | ✅ | 1.2e-6 | 5.81 | 3.31 | 1.76× |
-| 2 | 1,128,4,128,128 | ✅ | 9.5e-7 | 2.89 | 1.28 | 2.27× |
-| 3 | 4,128,4,128,128 | ✅ | 9.5e-7 | 2.95 | 1.50 | 1.96× |
-| 4 | 16,128,4,128,128 | ✅ | 1.1e-6 | 2.80 | 1.27 | 2.21× |
-| 5 | 128,128,4,128,128 | ✅ | 1.4e-6 | 10.93 | 6.13 | 1.78× |
-| 6 | 10000,128,4,128,128 | ✅ | 1.9e-6 | 772.0 | 417.5 | 1.85× |
-| 7 | 64,32,4,128,32 | ✅ | 9.5e-7 | 3.94 | 1.93 | 2.05× |
-| 8 | 64,1024,4,128,1024 | ✅ | 1.9e-6 | 72.2 | 66.1 | 1.09× |
-| 9 | 64,128,1,128,128 | ✅ | 1.2e-6 | 3.76 | 3.05 | 1.23× |
-| 10 | 64,128,2,128,128 | ✅ | 1.2e-6 | 4.70 | 3.08 | 1.53× |
-| 11 | 64,128,16,128,128 | ✅ | 1.4e-6 | 12.46 | 4.86 | 2.57× |
-| 12 | 64,128,4,32,128 | ✅ | 1.2e-6 | 2.84 | 1.26 | 2.25× |
-| 13 | 64,128,4,1024,128 | ✅ | 1.4e-6 | 168.4 | 42.0 | **4.01×** |
-| 14 | 32,1024,16,100000,1024 | ✅ (truncated) | 1.2e-6 | — baseline infeasible (~20.5 TB) — |
+| 1 | 64,128,4,128,128 | PASS | 1.2e-6 | 5.91 | 3.37 | 1.76x |
+| 2 | 1,128,4,128,128 | PASS | 9.5e-7 | 3.16 | 1.48 | 2.14x |
+| 3 | 4,128,4,128,128 | PASS | 9.5e-7 | 3.18 | 1.46 | 2.17x |
+| 4 | 16,128,4,128,128 | PASS | 1.1e-6 | 3.15 | 1.38 | 2.29x |
+| 5 | 128,128,4,128,128 | PASS | 1.4e-6 | 11.00 | 6.19 | 1.78x |
+| 6 | 10000,128,4,128,128 | PASS | 1.9e-6 | 772.3 | 418.0 | 1.85x |
+| 7 | 64,32,4,128,32 | PASS | 9.5e-7 | 4.05 | 1.96 | 2.07x |
+| 8 | 64,1024,4,128,1024 | PASS | 1.9e-6 | 70.9 | 64.6 | 1.10x |
+| 9 | 64,128,1,128,128 | PASS | 1.2e-6 | 3.85 | 3.11 | 1.24x |
+| 10 | 64,128,2,128,128 | PASS | 1.2e-6 | 4.77 | 3.13 | 1.52x |
+| 11 | 64,128,16,128,128 | PASS | 1.4e-6 | 12.55 | 4.91 | 2.56x |
+| 12 | 64,128,4,32,128 | PASS | 1.2e-6 | 3.06 | 1.32 | 2.33x |
+| 13 | 64,128,4,1024,128 | PASS | 1.4e-6 | 168.6 | 42.1 | **4.00x** |
+| 14 | 32,1024,16,100000,1024 | PASS (see below) | 1.2e-6 | *infeasible (~20.5 TB)* | 293377 | n/a |
 
-Shape 14's baseline cannot run (its `[B,H,S,S]` scores are ~20.5 TB). Correctness
-is validated by construction at a truncated `seq_len`; the full-length forward
-needs a GPU with FlashAttention (sm_75+, e.g. T4/A100). On P100 `torch.compile`
-is unavailable (Triton needs sm≥7.0), so these numbers are from SDPA alone — a
-T4 with compilation enabled is higher still. See `report/figures/`.
+### Shape 14: the one the baseline cannot run
+
+Its score matrix is `[32, 16, 100000, 100000]` = 5.12e12 elements = **~20.5 TB**
+in fp32. No GPU holds that, so there is no baseline time to divide by - the
+result is not a speedup number, it is the difference between *cannot run* and
+*runs*. On the same free 16 GB P100:
+
+```
+trunc S=2048 correctness: PASS max_abs=1.19e-06 max_rel=0.127
+vram free=16.64/17.06 GB | baseline scores would be 20.5 TB -> infeasible
+full S=100000: median=293376.9 ms | 10,907 tok/s | peak_vram=14.61 GB | chunk_bs=1
+```
+
+293 s per forward over 3.2 M tokens, peak 14.6 GB. Correctness is validated at a
+truncated `seq_len` where the baseline *can* run (PASS, `max_abs 1.2e-6`); SDPA's
+math does not depend on `S`, so passing there evidences correctness at 1e5.
+
+Two caveats we would rather state than hide: the P100 is `sm_60`, so it gets
+neither the real FlashAttention kernel (SDPA falls back to the memory-efficient
+backend) nor `torch.compile` (Triton needs sm>=7.0). Every speedup above is
+therefore **from SDPA alone**; a T4/A100 with compilation enabled would be
+higher. See `report/figures/`.
 
 ## Ablation
 
