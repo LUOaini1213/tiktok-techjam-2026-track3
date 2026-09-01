@@ -84,4 +84,4 @@ harness pays off.
 Hand-written Triton kernels (fused LayerNorm+residual, fused bias+GELU) and a
 Turing-specific FlashAttention kernel; automatic per-shape precision selection.
 
-Repo: https://github.com/LUOaini1213/tiktok-techjam-2026-track3 · Demo: [YouTube link — paste after upload]
+Repo: https://github.com/LUOaini1213/tiktok-techjam-2026-track3 · Demo: https://youtu.be/3aAw-jq1oTM

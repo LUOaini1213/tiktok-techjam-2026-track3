@@ -248,6 +248,8 @@ Environment toggles: `T3_AUTOCAST` (auto|fp16|bf16|off), `T3_COMPILE` (1|0),
 
 ## Demo video
 
+**Watch it: https://youtu.be/3aAw-jq1oTM**
+
 `build/track3_demo.mp4` (**exactly 3:00**, 1920x1080, subtitles in `.srt`) is
 **generated** from the measured CSVs, not hand-edited:
 

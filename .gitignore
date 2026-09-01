@@ -25,5 +25,8 @@ logs/
 .DS_Store
 .kaggle_upload/
 .kaggle_out*/
+.kaggle_pull*/
+.kaggle_probe_out/
+.fig_*.b64
 .kaggle_kernel_check/
 /track3_sc.py

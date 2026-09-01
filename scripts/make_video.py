@@ -368,6 +368,88 @@ def s_impact(F, ctx):
     return img
 
 
+# ------------------------------------------------- gallery-only slides
+def s_memory_wall(F, ctx):
+    """The 20.5 TB wall on its own. Used in the Devpost gallery, where the
+    problem has to land in a single still with no narration under it."""
+    img, d = new_slide()
+    eyebrow(d, F, "Shape 14  ·  seq_len = 100,000")
+    heading(d, F, "The baseline cannot run this shape")
+    paste_fit(img, ctx["fig_wall"], (140, 250, 1780, 790))
+    panel(d, (140, 820, 1780, 1000))
+    d.text((178, 848), "[B, H, S, S]  =  32 × 16 × 100000 × 100000  =  5.12e12 elements",
+           font=F["mono"], fill=INK_2)
+    d.text((178, 896), "= 20.5 TB in fp32.  No GPU holds that.",
+           font=F["monob"], fill=CRIT)
+    d.text((178, 946), "Ours completes the same forward in 14.6 GB, at 15,676 tok/s.",
+           font=F["monob"], fill=GOOD)
+    return img
+
+
+def s_precision(F, ctx):
+    """The fp16 trade, as a margin gauge against the hard gate."""
+    img, d = new_slide()
+    eyebrow(d, F, "The decision we had to measure to get right")
+    heading(d, F, "fp16 is twice as fast. We ship fp32.")
+
+    for i, (name, sub, width, color, note) in enumerate([
+        ("fp32  — shipped", "worst max_abs 1.91e-6", 0.33, GOOD,
+         "1049× inside the gate"),
+        ("fp16  — measured, not shipped", "worst max_abs 2.04e-3", 1.00, CRIT,
+         "0.98× — already past it"),
+    ]):
+        y = 330 + i * 160
+        d.text((140, y), name, font=F["h3"], fill=INK)
+        d.text((140, y + 58), sub, font=F["mono_s"], fill=MUTED)
+        x0, x1 = 780, 1740
+        fill_w = int((x1 - x0) * width)
+        d.rounded_rectangle((x0, y, x1, y + 84), radius=6, fill=PANEL)
+        d.rounded_rectangle((x0, y, x0 + fill_w, y + 84), radius=6, fill=color)
+        d.line([(x1 - 3, y - 8), (x1 - 3, y + 92)], fill=INK, width=4)
+        tw = d.textlength(note, font=F["monob"])
+        if tw + 48 <= fill_w:
+            d.text((x0 + 24, y + 24), note, font=F["monob"], fill=GROUND)
+        else:
+            d.text((x0 + fill_w + 24, y + 24), note, font=F["monob"], fill=color)
+    d.text((1600, 640), "atol = 0.002", font=F["small"], fill=MUTED)
+
+    body = [
+        ("fp16 passes all 13 shapes at 4.01× median — nearly double the "
+         "shipped path.", INK_2),
+        ("But its worst absolute error has already crossed the gate. It survives "
+         "only because the rule is abs OR rel, and that element happened to have "
+         "a large reference value.", CRIT),
+        ("That is luck, not margin. One failing element forfeits the speed score "
+         "entirely, so we kept the exact path and left fp16 as a documented flag.",
+         INK_2),
+    ]
+    y = 720
+    for text, color in body:
+        lines = wrap(d, text, F["body"], 1500)
+        d.ellipse([150, y + 15, 162, y + 27], fill=color)
+        for i, ln in enumerate(lines):
+            d.text((186, y + i * 42), ln, font=F["body"], fill=INK_2)
+        y += len(lines) * 42 + 26
+    return img
+
+
+GALLERY = [
+    ("01_results", lambda F, c: s_results(F, c)),
+    ("02_memory_wall", lambda F, c: s_memory_wall(F, c)),
+    ("03_architecture", lambda F, c: s_architecture(F, c)),
+    ("04_precision", lambda F, c: s_precision(F, c)),
+    ("05_demo", lambda F, c: demo_frame(F, c, len(DEMO), "13 / 13 pass · median 2.28×")),
+]
+
+
+def render_gallery(F, ctx, outdir):
+    os.makedirs(outdir, exist_ok=True)
+    for name, fn in GALLERY:
+        path = os.path.join(outdir, name + ".png")
+        fn(F, ctx).save(path, optimize=True)
+        print(f"  {path}  ({os.path.getsize(path)/1024:.0f} KB)")
+
+
 # ------------------------------------------------------------------ timeline
 SECTIONS = [
     dict(id="1_problem", start=0, end=15, kind="still", render=s_problem,
@@ -475,6 +557,9 @@ def main():
     ap.add_argument("--voice", default="en-US-AndrewNeural")
     ap.add_argument("--no-vo", action="store_true")
     ap.add_argument("--fps", type=int, default=24)
+    ap.add_argument("--gallery", default=None,
+                    help="render the Devpost gallery stills into this folder "
+                         "and exit without building the video")
     args = ap.parse_args()
 
     os.makedirs(args.workdir, exist_ok=True)
@@ -488,6 +573,12 @@ def main():
                fig_wall=os.path.join(figdir, "memory_wall.png"),
                fig_speed=os.path.join(figdir, "speedups.png"))
     F = fonts()
+
+    if args.gallery:
+        render_gallery(F, ctx, args.gallery
+                       if os.path.isabs(args.gallery)
+                       else os.path.join(HERE, args.gallery))
+        return 0
 
     from moviepy import AudioFileClip, ImageClip, concatenate_videoclips
 
