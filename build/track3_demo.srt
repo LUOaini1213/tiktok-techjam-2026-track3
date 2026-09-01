@@ -1,0 +1,24 @@
+1
+00:00:00,000 --> 00:00:15,000
+Make a Transformer layer faster on a GPU, without moving the answer. The grader checks every output element, and one bad element fails the shape. Fourteen of them — and the fourteenth needs twenty point five terabytes of attention scores, so the reference cannot run it at all.
+
+2
+00:00:15,000 --> 00:00:35,000
+We rewrite only the forward compute. Fused attention, so the score matrix is never built and memory grows linearly with sequence length. Compilation the model applies to itself. And chunking sized from the memory actually free at runtime. Every parameter name stays identical, so it drops straight into the official harness.
+
+3
+00:00:35,000 --> 00:00:55,000
+Here is the data flow. The baseline holds an S by S tensor twice, once for the scores and once for the softmax. We replace both with a single fused kernel that computes the same result without ever materializing that matrix, and generates the causal mask inside itself.
+
+4
+00:00:55,000 --> 00:02:20,000
+Now the full run, end to end. One self-contained kernel is built from the unmodified harness and pushed to a free Kaggle T4 — there is no NVIDIA GPU on this laptop. The card comes up, and the sweep begins. Every shape is checked for correctness first; only if it passes is the latency timed. Shape one, two point two eight times faster. Shape two, three point three six. Shape six, ten thousand sequences in a single batch, one point eight eight. Shape eight is dominated by its projections, so it barely moves. Shape thirteen, the long one, four point four four. Then shape fourteen, the one with no runnable baseline. Correctness is established at a truncated length where the reference still fits, and then the full hundred-thousand-token forward completes in two hundred and four seconds, at fifteen thousand tokens a second, inside fourteen point six gigabytes — on a card that only has fifteen point six in total. Getting that last shape to run took one more fix, and it was not in the attention: collecting the chunks in a list and joining them with torch cat holds the pieces and the joined result at the same time, a second six and a half gigabyte allocation exactly where memory was tightest. Writing each chunk straight into a preallocated output removed it. Thirteen of thirteen shapes pass, and the fourteenth runs.
+
+5
+00:02:20,000 --> 00:02:45,000
+All thirteen shapes pass, with a worst absolute error around two millionths — about a thousand times inside the tolerance. Median two point two eight times, up to four point four. We also measured a half-precision path at four point zero one, and we ship it turned off: its worst error has already crossed the absolute gate, and it survives only on the relative one.
+
+6
+00:02:45,000 --> 00:03:00,000
+It is a drop-in class, so any model built on this layer inherits the speedup with no retrain. Every run was on a free cloud GPU, and every number traces to a raw log in the repository.
+

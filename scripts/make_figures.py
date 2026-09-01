@@ -24,16 +24,21 @@ CSV_T4 = os.path.join(HERE, "results", "results_t4.csv")
 FIG = os.path.join(HERE, "report", "figures")
 
 # Palette roles. Categorical slots carry series identity; ink carries text; the
-# status red is reserved for the one bar that means "cannot run".
-SERIES_1 = "#2a78d6"   # P100
-SERIES_2 = "#eb6834"   # T4
-CRITICAL = "#d03b3b"
-SURFACE = "#fcfcfb"
-INK = "#0b0b0b"
-INK_2 = "#52514e"
-MUTED = "#898781"
-GRID = "#e1e0d9"
-AXIS = "#c3c2b7"
+# status red is reserved for the one bar that means "cannot run". Both modes are
+# selected against their own surface, not flipped from each other.
+THEMES = {
+    "light": dict(SERIES_1="#2a78d6", SERIES_2="#eb6834", CRITICAL="#d03b3b",
+                  SURFACE="#fcfcfb", INK="#0b0b0b", INK_2="#52514e",
+                  MUTED="#898781", GRID="#e1e0d9", AXIS="#c3c2b7"),
+    "dark":  dict(SERIES_1="#3987e5", SERIES_2="#d95926", CRITICAL="#e66767",
+                  SURFACE="#12171e", INK="#ffffff", INK_2="#c3c2b7",
+                  MUTED="#898781", GRID="#2c323b", AXIS="#3d444e"),
+}
+SERIES_1 = SERIES_2 = CRITICAL = SURFACE = INK = INK_2 = MUTED = GRID = AXIS = None
+
+
+def use_theme(name):
+    globals().update(THEMES[name])
 
 # [B, d_model, heads, seq] for the memory-wall chart.
 SHAPES = {
@@ -178,6 +183,17 @@ def memory_wall_chart():
 
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--theme", default="light", choices=sorted(THEMES))
+    ap.add_argument("--outdir", default=None,
+                    help="where to write the PNGs (default report/figures)")
+    args = ap.parse_args()
+
+    global FIG
+    use_theme(args.theme)
+    if args.outdir:
+        FIG = args.outdir if os.path.isabs(args.outdir) else os.path.join(HERE, args.outdir)
     os.makedirs(FIG, exist_ok=True)
     memory_wall_chart()   # does not need any results file
     speedup_chart()

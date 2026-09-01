@@ -157,7 +157,10 @@ vram free=16.64/17.06 GB | baseline scores would be 20.5 TB -> infeasible
 full S=100000: median=293376.9 ms | 10,907 tok/s | peak_vram=14.61 GB | chunk_bs=1
 ```
 
-293 s per forward over 3.2 M tokens, peak 14.6 GB. Correctness is validated at a
+293 s per forward over 3.2 M tokens, peak 14.6 GB. On a **T4**, where SDPA gets
+its real FlashAttention backend, the same forward takes **204 s at 15,676 tok/s**
+with a 14.58 GB peak — on a card that has only 15.64 GB in total, tighter than the
+P100's 17.06 GB, and it still fits (`results/kaggle_t4_shape14.log`). Correctness is validated at a
 truncated `seq_len` where the baseline *can* run (PASS, `max_abs 1.2e-6`); SDPA's
 math does not depend on `S`, so passing there evidences correctness at 1e5.
 
@@ -242,6 +245,35 @@ Environment toggles: `T3_AUTOCAST` (auto|fp16|bf16|off), `T3_COMPILE` (1|0),
   be correct at the small `S` where a mask is actually supplied. Making the
   padded path memory-efficient too (block-sparse or a folded key-padding mask)
   is unfinished work, not a solved problem we left out.
+
+## Demo video
+
+`build/track3_demo.mp4` (**exactly 3:00**, 1920x1080, subtitles in `.srt`) is
+**generated** from the measured CSVs, not hand-edited:
+
+```bash
+python scripts/make_video.py --out build/track3_demo.mp4
+```
+
+It follows the required submission structure, and the section windows are fixed
+rather than fitted to whatever the narration happens to run to:
+
+| | | |
+|---|---|---|
+| 0:00–0:15 | Problem | the task, the per-element gate, the 20.5 TB shape |
+| 0:15–0:35 | Our Solution | fused attention, self-applied compile, VRAM-planned chunking |
+| 0:35–0:55 | Architecture | baseline vs our data flow, and where the S×S tensor dies |
+| **0:55–2:20** | **Live Demo** | build → push → T4 comes up → 13 shapes → shape 14 → summary |
+| 2:20–2:45 | Results | speedup chart, the three precision regimes |
+| 2:45–3:00 | Impact | drop-in reuse, free-tier reproducibility |
+
+If a section's narration overruns its window the script re-synthesizes it at a
+higher speaking rate rather than letting the timeline drift, and reports the rate
+it used. The demo block is a **replay of the recorded run**, labelled as such on
+screen and sourced from `results/kaggle_t4_run.log` and
+`results/kaggle_t4_shape14.log` — the GPUs are in Kaggle, so there is no local
+screen to capture. `--no-vo` renders a silent, subtitle-only cut with no network
+access.
 
 ## Report
 

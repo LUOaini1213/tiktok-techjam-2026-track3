@@ -9,6 +9,10 @@ venv/
 *.png.local
 # Build artifacts
 *.zip
+# Video working files (slides, per-scene narration, dark figures). The
+# finished mp4 and its subtitles ARE committed; regenerate the rest with
+# scripts/make_video.py.
+build/video/
 # Large / transient logs
 logs/
 *.log
@@ -16,6 +20,8 @@ logs/
 !results/kaggle_p100_run.log
 !results/kaggle_t4_run.log
 !results/kaggle_t4_ablation.log
+!results/kaggle_t4_fp16_run.log
+!results/kaggle_t4_shape14.log
 .DS_Store
 .kaggle_upload/
 .kaggle_out*/

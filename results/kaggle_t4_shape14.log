@@ -1,0 +1,12 @@
+=== ENV ===
+gpu Tesla T4 | torch 2.10.0+cu128 | cuda 12.8 | cc (7, 5)
+
+##### SHAPE 14 : optimized-only (baseline infeasible ~20.5 TB) #####
+trunc S=2048 correctness: PASS max_abs=1.19e-06 max_rel=0.43
+vram free=15.45/15.64 GB | baseline scores would be 20.5 TB -> infeasible
+full S=100000: median=204132.3 ms | 15,676 tok/s | peak_vram=14.58 GB | chunk_bs=1
+
+=================== SUMMARY (copy from here) ===================
+shape,pass,max_abs,max_rel,baseline_ms,opt_ms,speedup,note
+14,PASS(trunc),1.1920928955078125e-06,0.43010756373405457,,,,full S=1e5 OK 204132ms 15,676tok/s peak14.6GB chunk1
+=================== END SUMMARY ===================

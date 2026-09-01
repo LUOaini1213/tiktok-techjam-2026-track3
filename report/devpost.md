@@ -55,7 +55,8 @@ levers:
   `OR rel<=0.02` branch. That is a coin flip, not a margin; the shipped path sits
   ~1000× inside the gate. The flag is documented for anyone who wants the trade.
 - Shape 14 (`seq_len=100000`): baseline infeasible (~20.5 TB of scores). Ours
-  **runs it**: 293 s per forward, 10,907 tok/s over 3.2 M tokens, peak **14.6 GB**
+  **runs it**: 204 s per forward, 15,676 tok/s over 3.2 M tokens, peak **14.6 GB**
+  on a T4 (293 s / 10,907 tok/s on a P100)
   — in fp16, which for this shape is not a choice: its fp32 input and output are
   13.1 GB each, 26.2 GB before a single activation.
   Correctness validated at a truncated length where the baseline can run (PASS,

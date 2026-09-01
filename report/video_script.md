@@ -1,5 +1,18 @@
 # 3-minute demo video script — Track 3
 
+> **The delivered video is generated, not hand-edited.** `scripts/make_video.py`
+> renders the slides from `results/*.csv`, synthesizes the narration, and holds
+> each slide for exactly as long as its own voice-over runs — so re-running it
+> after a new sweep produces a video that still agrees with the data:
+>
+> ```bash
+> python scripts/make_video.py --out build/track3_demo.mp4
+> ```
+>
+> Output: `build/track3_demo.mp4` (2:22, 1920x1080) plus `.srt` subtitles.
+> The narration text lives in that script's `SCENES` list; this document is the
+> storyboard it was written from, kept for the reasoning behind each beat.
+
 > Public YouTube, ≤ 3:00. Screen-recording + voiceover. Numbers are the measured
 > Kaggle P100 run (results/kaggle_p100_run.log).
 > A walkthrough (no fancy UI) is explicitly accepted for backend tracks.

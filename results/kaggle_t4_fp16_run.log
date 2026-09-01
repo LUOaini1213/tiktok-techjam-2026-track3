@@ -1,0 +1,62 @@
+=== ENV ===
+gpu Tesla T4 | torch 2.10.0+cu128 | cuda 12.8 | cc (7, 5)
+
+##### SHAPE 1 : B=64 D=128 H=4 S=128 L=4 F=128 #####
+PASS max_abs=0.00153 max_rel=373 | baseline=9.4288ms optimized=1.6634ms | speedup=5.669x
+
+##### SHAPE 2 : B=1 D=128 H=4 S=128 L=4 F=128 #####
+PASS max_abs=0.00113 max_rel=584 | baseline=3.0944ms optimized=0.6800ms | speedup=4.551x
+
+##### SHAPE 3 : B=4 D=128 H=4 S=128 L=4 F=128 #####
+PASS max_abs=0.0013 max_rel=570 | baseline=2.9143ms optimized=0.7188ms | speedup=4.054x
+
+##### SHAPE 4 : B=16 D=128 H=4 S=128 L=4 F=128 #####
+PASS max_abs=0.00152 max_rel=3.38e+03 | baseline=3.1539ms optimized=0.6941ms | speedup=4.544x
+
+##### SHAPE 5 : B=128 D=128 H=4 S=128 L=4 F=128 #####
+PASS max_abs=0.00163 max_rel=4.73e+03 | baseline=18.2637ms optimized=5.1080ms | speedup=3.575x
+
+##### SHAPE 6 : B=10000 D=128 H=4 S=128 L=4 F=128 #####
+PASS max_abs=0.00204 max_rel=4.14e+08 | baseline=1429.8435ms optimized=393.3432ms | speedup=3.635x
+
+##### SHAPE 7 : B=64 D=32 H=4 S=128 L=4 F=32 #####
+PASS max_abs=0.00168 max_rel=1.57e+03 | baseline=6.3078ms optimized=2.2956ms | speedup=2.748x
+
+##### SHAPE 8 : B=64 D=1024 H=4 S=128 L=4 F=1024 #####
+PASS max_abs=0.0015 max_rel=5.26e+03 | baseline=130.3593ms optimized=32.4788ms | speedup=4.014x
+
+##### SHAPE 9 : B=64 D=128 H=1 S=128 L=4 F=128 #####
+PASS max_abs=0.00141 max_rel=607 | baseline=6.3725ms optimized=2.6827ms | speedup=2.375x
+
+##### SHAPE 10 : B=64 D=128 H=2 S=128 L=4 F=128 #####
+PASS max_abs=0.00161 max_rel=633 | baseline=7.9463ms optimized=2.6819ms | speedup=2.963x
+
+##### SHAPE 11 : B=64 D=128 H=16 S=128 L=4 F=128 #####
+PASS max_abs=0.00141 max_rel=786 | baseline=22.3195ms optimized=3.5041ms | speedup=6.369x
+
+##### SHAPE 12 : B=64 D=128 H=4 S=32 L=4 F=128 #####
+PASS max_abs=0.00143 max_rel=77.6 | baseline=2.8936ms optimized=2.1926ms | speedup=1.320x
+
+##### SHAPE 13 : B=64 D=128 H=4 S=1024 L=4 F=128 #####
+PASS max_abs=0.00165 max_rel=2.27e+04 | baseline=317.3440ms optimized=27.5291ms | speedup=11.528x
+
+##### SHAPE 14 : optimized-only (baseline infeasible ~20.5 TB) #####
+skipped for this T3_ONLY selector
+
+=================== SUMMARY (copy from here) ===================
+shape,pass,max_abs,max_rel,baseline_ms,opt_ms,speedup,note
+1,PASS,0.0015320777893066406,372.7033386230469,9.4288,1.6634,5.669,
+2,PASS,0.0011346936225891113,584.0529174804688,3.0944,0.6800,4.551,
+3,PASS,0.0012987591326236725,569.79296875,2.9143,0.7188,4.054,
+4,PASS,0.0015202760696411133,3376.55712890625,3.1539,0.6941,4.544,
+5,PASS,0.0016254186630249023,4734.51171875,18.2637,5.1080,3.575,
+6,PASS,0.0020388364791870117,414387328.0,1429.8435,393.3432,3.635,
+7,PASS,0.001678764820098877,1571.1898193359375,6.3078,2.2956,2.748,
+8,PASS,0.001495063304901123,5264.8505859375,130.3593,32.4788,4.014,
+9,PASS,0.0014103055000305176,607.114501953125,6.3725,2.6827,2.375,
+10,PASS,0.0016071796417236328,633.4031372070312,7.9463,2.6819,2.963,
+11,PASS,0.0014148354530334473,785.84521484375,22.3195,3.5041,6.369,
+12,PASS,0.0014280080795288086,77.64096069335938,2.8936,2.1926,1.320,
+13,PASS,0.001652047038078308,22743.265625,317.3440,27.5291,11.528,
+# median_speedup=4.014x min=1.320x max=11.528x over 13 PASS shapes
+=================== END SUMMARY ===================

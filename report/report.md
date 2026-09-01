@@ -106,7 +106,11 @@ vram free=16.64/17.06 GB | baseline scores would be 20.5 TB -> infeasible
 full S=100000: median=293376.9 ms | 10,907 tok/s | peak_vram=14.61 GB | chunk_bs=1
 ```
 
-293 s per forward across 3.2 M tokens, peak 14.61 GB of the 17.06 GB card.
+293 s per forward across 3.2 M tokens, peak 14.61 GB of the 17.06 GB card. On a
+**T4**, where SDPA gets its real FlashAttention backend, the same forward takes
+**204 s at 15,676 tok/s** with a 14.58 GB peak — on a card with only 15.64 GB
+total, tighter than the P100, and it still fits
+(`results/kaggle_t4_shape14.log`).
 Correctness is established at a truncated `seq_len` where the baseline can run
 (PASS, `max_abs 1.2e-6`); SDPA's math is independent of `S`, so that carries to
 1e5. Getting here required the memory fix in §4.4 — before it, the run died in
