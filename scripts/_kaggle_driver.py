@@ -6,6 +6,10 @@
 _RESULTS = []  # (idx, pass, max_abs, max_rel, base_ms, opt_ms, speedup, note)
 
 
+class _Skip(Exception):
+    """Sentinel for the T3_ONLY selector."""
+
+
 def _bench(model, x, mask, warmup=20, iters=50):
     import torch
     with torch.inference_mode():
@@ -58,22 +62,29 @@ def _shape14(device):
     copy_model_weights(base, opt, strict=True); del base
     opt = opt.to(device, torch.float16).eval()
     torch.cuda.reset_peak_memory_stats(device)
+    free0, total0 = torch.cuda.mem_get_info(device)
+    scores_tb = cfg.batch_size * cfg.num_heads * cfg.seq_len ** 2 * 4 / 1e12
+    print(f"vram free={free0/1e9:.2f}/{total0/1e9:.2f} GB | baseline scores would be "
+          f"{scores_tb:.1f} TB -> infeasible", flush=True)
     try:
         x, m = generate_random_case(cfg, device, torch.float16, 1234, 0.0, 1.0)
-        med = _bench(opt, x, m, warmup=5, iters=20)
+        med = _bench(opt, x, m, warmup=3, iters=10)
         tok = cfg.batch_size * cfg.seq_len
         peak = torch.cuda.max_memory_allocated(device) / 1e9
-        note = f"full S=1e5 {med:.0f}ms {tok*1000.0/med:,.0f}tok/s peak{peak:.1f}GB"
+        note = (f"full S=1e5 OK {med:.0f}ms {tok*1000.0/med:,.0f}tok/s "
+                f"peak{peak:.1f}GB chunk{opt._chunk_bs}")
         print(f"full S=100000: median={med:.1f} ms | {tok*1000.0/med:,.0f} tok/s | "
               f"peak_vram={peak:.2f} GB | chunk_bs={opt._chunk_bs}", flush=True)
     except RuntimeError as e:
-        note = "full S=1e5 OOM (needs bigger GPU)"
-        print("shape14 full-seq RuntimeError:", str(e)[:200], flush=True)
+        peak = torch.cuda.max_memory_allocated(device) / 1e9
+        note = f"full S=1e5 OOM peak{peak:.1f}GB chunk{opt._chunk_bs}"
+        print("shape14 full-seq RuntimeError:", str(e)[:300], flush=True)
     _RESULTS.append((14, tpass + "(trunc)", res.max_abs_error, res.max_relative_error,
                      "", "", "", note))
 
 
 def _main():
+    import os
     import torch
     device = torch.device("cuda")
     dtype = torch.float32
@@ -82,6 +93,8 @@ def _main():
     print("=== ENV ===", flush=True)
     print(f"gpu {torch.cuda.get_device_name(device)} | torch {torch.__version__} | "
           f"cuda {torch.version.cuda} | cc {torch.cuda.get_device_capability(device)}", flush=True)
+
+    only = os.environ.get("T3_ONLY", "all").strip().lower()
 
     SH = [
         (1, 64, 128, 4, 128, 4, 128), (2, 1, 128, 4, 128, 4, 128),
@@ -92,7 +105,7 @@ def _main():
         (11, 64, 128, 16, 128, 4, 128), (12, 64, 128, 4, 32, 4, 128),
         (13, 64, 128, 4, 1024, 4, 128),
     ]
-    for (idx, b, d, h, s, l, f) in SH:
+    for (idx, b, d, h, s, l, f) in (SH if only in ("all", "1-13") else []):
         print(f"\n##### SHAPE {idx} : B={b} D={d} H={h} S={s} L={l} F={f} #####", flush=True)
         cfg = TransformerConfig(batch_size=b, seq_len=s, d_model=d, num_heads=h,
                                 ffn_dim=f, num_layers=l, causal=True)
@@ -125,7 +138,11 @@ def _main():
 
     print("\n##### SHAPE 14 : optimized-only (baseline infeasible ~20.5 TB) #####", flush=True)
     try:
+        if only == "1-13":
+            raise _Skip
         _shape14(device)
+    except _Skip:
+        print("skipped (T3_ONLY=1-13)", flush=True)
     except Exception as e:
         print("SHAPE 14 ERROR:", str(e)[:200], flush=True)
         _RESULTS.append((14, "ERROR", "", "", "", "", "", str(e)[:60]))

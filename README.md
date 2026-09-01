@@ -10,9 +10,9 @@ output numerically identical to the reference implementation (per-element
 | Lever | Effect |
 |---|---|
 | **`F.scaled_dot_product_attention` (FlashAttention)** | Replaces the baseline's `O(S²)` materialized score matrix with an `O(S)` fused kernel. Makes the `seq_len=100000` shape possible at all — the baseline would need **~20.5 TB** just for its attention scores. |
-| **Internal fp16 autocast (even under fp32 grading)** | Lights up the GPU tensor cores. `rtol=0.02` (2%) leaves ~40× headroom over fp16 rounding; LayerNorm/softmax reductions stay in fp32. |
-| **Self-applied `torch.compile`** | Fuses LayerNorm / bias / GELU epilogues into Triton kernels; independent of the grader passing `--compile-user`. Per-shape mode (CUDA graphs for launch-bound shapes). |
-| **Batch chunking (only `seq_len=1e5`)** | Keeps activations inside a 16 GB GPU. |
+| **Internal fp16 autocast** (`T3_AUTOCAST=fp16`, **opt-in**) | Lights up the tensor cores. Off by default: across 4 layers, fp16 rounding pushes near-zero outputs past the *absolute* `atol=0.002` gate, and correctness outranks speed. Reductions stay in fp32. |
+| **Self-applied `torch.compile`** | Fuses LayerNorm / bias / GELU epilogues into Triton kernels; independent of the grader passing `--compile-user`. Per-shape mode (CUDA graphs for launch-bound shapes). Needs sm≥7.0, so it is *inactive* on the P100 the numbers below come from. |
+| **Batch chunking into a preallocated output** (only `seq_len=1e5`) | Keeps activations inside a 16 GB GPU. Chunks are written in place rather than collected and `torch.cat`-ed — the concat holds the pieces *and* the joined result at once, which is what made this shape OOM. |
 
 We keep **every baseline submodule and parameter name unchanged** and rewrite
 only the forward compute, so the harness' `copy_model_weights(strict=True)`
@@ -90,9 +90,9 @@ T4 with compilation enabled is higher still. See `report/figures/`.
 (no code edits) — see `results/ablation.md`:
 
 ```bash
-T3_COMPILE=0 T3_AUTOCAST=off python run_all.py --shapes 1   # SDPA only
-T3_COMPILE=0                  python run_all.py --shapes 1   # + fp16
-                              python run_all.py --shapes 1   # + compile
+T3_COMPILE=0                  python run_all.py --shapes 1   # SDPA only (default)
+T3_COMPILE=0 T3_AUTOCAST=fp16 python run_all.py --shapes 1   # + fp16 tensor cores
+                              python run_all.py --shapes 1   # + torch.compile (sm>=7.0)
 ```
 
 Environment toggles: `T3_AUTOCAST` (auto|fp16|bf16|off), `T3_COMPILE` (1|0),
@@ -100,8 +100,13 @@ Environment toggles: `T3_AUTOCAST` (auto|fp16|bf16|off), `T3_COMPILE` (1|0),
 
 ## Correctness notes
 
-- Every element must pass (zero failures); `NaN/Inf` is a hard fail. We target
-  `max_abs ≤ 0.001` and `max_rel ≤ 0.01` (half the tolerance) as a safety margin.
+- Every element must pass (zero failures); `NaN/Inf` is a hard fail. Measured
+  `max_abs ≈ 1e-6`, ~2000× inside `atol=0.002`.
+- The `max_rel` column looks large (up to ~15) and that is expected: the harness
+  computes it over *every* element as `abs_err / max(|ref|, 1e-12)`, so an output
+  whose reference is ~1e-7 reports a huge ratio while its absolute error is still
+  ~1e-6. Those elements pass on the absolute criterion — which is exactly what the
+  `abs OR rel` rule exists for. **Zero elements fail either test.**
 - Softmax accumulates in fp32 (SDPA on CUDA), matching the reference; GELU uses
   the exact `approximate="none"` form.
 - Shape 14 has no runnable baseline (20.5 TB scores). We validate correctness at

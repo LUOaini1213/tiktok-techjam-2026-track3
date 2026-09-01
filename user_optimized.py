@@ -34,13 +34,20 @@ Ablation / robustness toggles via environment variables (see README):
 from __future__ import annotations
 
 import os
-from typing import List, Optional
+from typing import Optional
 
 import torch
 import torch.nn.functional as F
 
 # Reuse the reference model definition so parameter names match exactly.
 from torch_transformer_benchmark import BaselineTransformer
+
+
+# Live [chunk, S, max(D, ffn)] intermediates a block keeps alive simultaneously.
+_LIVE_INTERMEDIATES = 8
+
+# torch.cuda.OutOfMemoryError exists on torch>=1.13; older builds raise RuntimeError.
+_OOM = getattr(torch.cuda, "OutOfMemoryError", RuntimeError)
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -98,19 +105,45 @@ class UserOptimizedTransformer(BaselineTransformer):
             else:
                 self._autocast_dtype = torch.bfloat16
 
-        # Batch-chunk only when a single batch element's largest activation is
-        # big enough that the full batch would blow the VRAM budget. With the
-        # 300M-element budget this only triggers for the seq_len=1e5 shape.
+        # Batch-chunk only when the full batch's activations would not fit in
+        # the VRAM that is actually free right now. In practice this only ever
+        # triggers for the seq_len=1e5 shape.
         override = os.environ.get("T3_CHUNK_BS")
         b, s, _ = x.shape
         fdim = self.config.ffn_dim
         per_sample = s * max(self.config.d_model, fdim)
         if override is not None:
             self._chunk_bs = max(1, int(override))
+        elif b * per_sample <= 300_000_000:
+            # Whole-batch activations are small by any measure -> never chunk.
+            # Keeps every graded shape (1-13) on the single-pass path.
+            self._chunk_bs = None
         else:
-            budget = 300_000_000
-            cb = max(1, min(b, budget // max(1, per_sample)))
+            cb = max(1, min(b, self._chunk_budget(x) // max(1, per_sample)))
             self._chunk_bs = cb if cb < b else None
+
+    def _chunk_budget(self, x: torch.Tensor) -> int:
+        """Elements of working-set headroom available for one chunk.
+
+        The chunked path pre-allocates the full [B,S,D] output, so the budget is
+        (free VRAM - output buffer) with a fragmentation reserve, divided by the
+        number of live intermediates a block keeps alive at once (~8: q/k/v, the
+        SDPA output, its contiguous copy, the projection, and the two residuals).
+        """
+        if x.device.type != "cuda":
+            return 300_000_000
+        try:
+            free_dev, _total = torch.cuda.mem_get_info(x.device)
+            # Blocks the caching allocator already holds but is not using.
+            free_dev += torch.cuda.memory_reserved(x.device) - torch.cuda.memory_allocated(
+                x.device
+            )
+        except Exception:
+            return 300_000_000
+        out_bytes = x.numel() * x.element_size()
+        usable = (free_dev - out_bytes) * 0.6  # 40% reserve for fragmentation
+        elem_bytes = 2 if self._autocast_dtype is not None else x.element_size()
+        return max(1, int(usable / (elem_bytes * _LIVE_INTERMEDIATES)))
 
     # ---- compute ------------------------------------------------------------
     def _attention(self, attn, x, mask, causal, all_valid):
@@ -209,12 +242,34 @@ class UserOptimizedTransformer(BaselineTransformer):
                 return _invoke(self._run_full, xin, m, av)
 
         if self._chunk_bs is not None and self._chunk_bs < b:  # extreme shape only
-            outs: List[torch.Tensor] = []
-            for i in range(0, b, self._chunk_bs):
-                sl = slice(i, i + self._chunk_bs)
-                ms = None if valid_token_mask is None else valid_token_mask[sl]
-                av = True if ms is None else bool(ms.all())
-                outs.append(core(x[sl], ms, av).to(x.dtype))
-            return torch.cat(outs, dim=0)
+            return self._forward_chunked(x, valid_token_mask, core, b)
 
         return core(x, valid_token_mask, all_valid).to(x.dtype)
+
+    def _forward_chunked(self, x, valid_token_mask, core, b):
+        """Batch-chunked forward for the shape whose activations exceed VRAM.
+
+        Writes each chunk straight into a pre-allocated output instead of
+        collecting a list and ``torch.cat``-ing it: the concat would hold both
+        the pieces and the joined result at once, doubling peak VRAM exactly
+        when memory is tightest (it is what made seq_len=1e5 OOM on a 16 GB
+        card). On OOM the chunk size is halved and the pass restarted, so a
+        mis-estimated budget degrades instead of failing.
+        """
+        while True:
+            try:
+                out = torch.empty_like(x)
+                for i in range(0, b, self._chunk_bs):
+                    sl = slice(i, i + self._chunk_bs)
+                    ms = None if valid_token_mask is None else valid_token_mask[sl]
+                    av = True if ms is None else bool(ms.all())
+                    piece = core(x[sl], ms, av)
+                    out[sl].copy_(piece)
+                    del piece
+                return out
+            except _OOM:
+                if self._chunk_bs <= 1:
+                    raise
+                out = None
+                self._chunk_bs = max(1, self._chunk_bs // 2)
+                torch.cuda.empty_cache()

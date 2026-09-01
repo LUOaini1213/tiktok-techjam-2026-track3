@@ -50,6 +50,13 @@ def timing_full(args, device):
     print("\n=== A) full seq_len=100000, optimized only (fp16) ===")
     cfg = bench.TransformerConfig(**{**FULL, "num_layers": args.layers})
     dtype = torch.float16
+    scores_tb = cfg.batch_size * cfg.num_heads * cfg.seq_len ** 2 * 4 / 1e12
+    print(f"  baseline would need {scores_tb:.1f} TB of attention scores -> "
+          f"cannot run; only the optimized path is timed here")
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats(device)
+    free0, total0 = torch.cuda.mem_get_info(device)
+    print(f"  vram free={free0/1e9:.2f} GB / total={total0/1e9:.2f} GB")
     try:
         _, optimized = build_pair(cfg, device, dtype)
         x, mask = bench.generate_random_case(cfg, device, dtype, seed=1234,
@@ -76,8 +83,9 @@ def timing_full(args, device):
         print(f"  chunk_bs={optimized._chunk_bs} autocast={optimized._autocast_dtype}")
     except RuntimeError as e:
         if "out of memory" in str(e).lower():
-            print(f"  [OOM] full seq_len did not fit on this GPU: {e}")
-            print("  -> try a 16GB+ GPU (Kaggle P100/T4), or set T3_CHUNK_BS=1.")
+            peak = torch.cuda.max_memory_allocated(device) / 1e9
+            print(f"  [OOM] full seq_len did not fit (peak {peak:.2f} GB): {e}")
+            print("  -> set T3_CHUNK_BS=1, or use a GPU with more VRAM.")
         else:
             raise
 

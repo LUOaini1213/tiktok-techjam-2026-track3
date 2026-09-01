@@ -40,8 +40,15 @@ shape 14 at all; only a memory-efficient (FlashAttention-style) attention with
 3. **Self-applied `torch.compile`.** Inductor fuses LayerNorm/bias/GELU
    epilogues into Triton kernels; `reduce-overhead` (CUDA graphs) for
    launch-bound small shapes, `default` otherwise. Independent of `--compile-user`.
-4. **Batch chunking for shape 14 only.** Keeps activations within 16 GB; outputs
-   concatenated in order.
+4. **Batch chunking into a preallocated output, shape 14 only.** The chunk size
+   is planned from the VRAM that is actually free (`cuda.mem_get_info` plus the
+   allocator's reserved-but-unused blocks), minus the output buffer, divided by
+   the ~8 activations a block keeps live at once. Each chunk is written straight
+   into the preallocated `[B,S,D]` output; the earlier list-plus-`torch.cat`
+   version held the pieces *and* the joined tensor simultaneously, which doubled
+   peak VRAM precisely where it was tightest and was the actual cause of the
+   seq_len=1e5 OOM. If the estimate is still too optimistic the chunk size halves
+   and the pass restarts, so a mis-planned budget degrades instead of failing.
 
 Per-shape dispatch table and the correctness checklist are in the project plan
 and `user_optimized.py`.

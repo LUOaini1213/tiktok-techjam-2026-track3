@@ -23,6 +23,9 @@ BOOTSTRAP = '''# --- bootstrap: ensure a torch build compatible with the allocat
 # torch 2.10+cu128 does NOT support (sm_70+ only). Detect an incompatible build and
 # reinstall a P100+T4-compatible torch, then re-exec so the new build is loaded.
 import os as _os, sys as _sys, subprocess as _sp
+# Expandable segments keep the allocator from fragmenting when the seq_len=1e5
+# shape holds two ~6.5 GB tensors (input + output) plus per-chunk activations.
+_os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 if _os.environ.get("_T3_BOOT") != "1":
     _need = False
     try:
