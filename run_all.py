@@ -145,10 +145,30 @@ def main() -> int:
     ap.add_argument("--accuracy-trials", type=int, default=5)
     ap.add_argument("--timeout", type=int, default=1800)
     ap.add_argument("--out", default=os.path.join(HERE, "results", "results.csv"))
+    ap.add_argument("--force", action="store_true",
+                    help="allow overwriting the committed results/results.csv "
+                         "from a machine with no CUDA device")
     args = ap.parse_args()
 
     shapes = parse_shapes(args.shapes)
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
+
+    # The committed results/results.csv holds real GPU measurements. Running this
+    # script on a CPU-only box (every shape times out) silently replaced it once;
+    # refuse by default rather than let it happen again.
+    default_out = os.path.abspath(args.out) == os.path.abspath(
+        os.path.join(HERE, "results", "results.csv"))
+    if default_out and not args.force and os.path.exists(args.out):
+        try:
+            import torch
+            has_cuda = torch.cuda.is_available()
+        except Exception:
+            has_cuda = False
+        if not has_cuda:
+            print("refusing to overwrite the committed results/results.csv from a "
+                  "machine with no CUDA device." + chr(10) +
+                  "  pass --out <path> to write elsewhere, or --force to override.")
+            return 2
 
     rows = []
     speedups = []

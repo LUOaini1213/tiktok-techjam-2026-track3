@@ -1,0 +1,46 @@
+=== ENV ===
+gpu Tesla T4 | torch 2.10.0+cu128 | cuda 12.8 | cc (7, 5)
+
+##### STAGE ABLATION #####
+stage ablation: shape,stage,pass,max_abs,max_rel,baseline_ms,opt_ms,speedup
+ABL,1,sdpa,PASS,1.67e-06,0.702,9.3733,4.6676,2.008
+ABL,1,sdpa+compile,PASS,1.19e-06,0.191,9.3733,4.0254,2.329
+ABL,1,sdpa+fp16,PASS,0.00142,246,9.3733,2.5252,3.712
+ABL,1,sdpa+compile+fp16,PASS,0.00153,373,9.3733,1.6696,5.614
+ABL,12,sdpa,PASS,1.19e-06,0.142,3.4138,1.4909,2.290
+ABL,12,sdpa+compile,PASS,1.43e-06,0.176,3.4138,2.3367,1.461
+ABL,12,sdpa+fp16,PASS,0.00167,221,3.4138,2.4066,1.419
+ABL,12,sdpa+compile+fp16,PASS,0.00152,119,3.4138,1.1939,2.859
+ABL,8,sdpa,PASS,1.91e-06,7.29,118.9154,110.8440,1.073
+ABL,8,sdpa+compile,PASS,1.91e-06,7.29,118.9154,113.5018,1.048
+ABL,8,sdpa+fp16,PASS,0.00153,5.67e+03,118.9154,31.2722,3.803
+ABL,8,sdpa+compile+fp16,PASS,0.00153,5.67e+03,118.9154,31.3094,3.798
+ABL,13,sdpa,PASS,1.43e-06,2,313.5564,66.9409,4.684
+ABL,13,sdpa+compile,PASS,1.43e-06,2,313.5564,67.7587,4.628
+ABL,13,sdpa+fp16,PASS,0.00152,1.16e+04,313.5564,27.1072,11.567
+ABL,13,sdpa+compile+fp16,PASS,0.00152,1.16e+04,313.5564,27.1695,11.541
+
+##### SHAPE 14 : optimized-only (baseline infeasible ~20.5 TB) #####
+skipped for this T3_ONLY selector
+
+=================== SUMMARY (copy from here) ===================
+shape,pass,max_abs,max_rel,baseline_ms,opt_ms,speedup,note
+# --- stage ablation ---
+abl_shape,stage,pass,max_abs,max_rel,baseline_ms,opt_ms,speedup
+1,sdpa,PASS,1.67e-06,0.702,9.3733,4.6676,2.008
+1,sdpa+compile,PASS,1.19e-06,0.191,9.3733,4.0254,2.329
+1,sdpa+fp16,PASS,0.00142,246,9.3733,2.5252,3.712
+1,sdpa+compile+fp16,PASS,0.00153,373,9.3733,1.6696,5.614
+12,sdpa,PASS,1.19e-06,0.142,3.4138,1.4909,2.290
+12,sdpa+compile,PASS,1.43e-06,0.176,3.4138,2.3367,1.461
+12,sdpa+fp16,PASS,0.00167,221,3.4138,2.4066,1.419
+12,sdpa+compile+fp16,PASS,0.00152,119,3.4138,1.1939,2.859
+8,sdpa,PASS,1.91e-06,7.29,118.9154,110.8440,1.073
+8,sdpa+compile,PASS,1.91e-06,7.29,118.9154,113.5018,1.048
+8,sdpa+fp16,PASS,0.00153,5.67e+03,118.9154,31.2722,3.803
+8,sdpa+compile+fp16,PASS,0.00153,5.67e+03,118.9154,31.3094,3.798
+13,sdpa,PASS,1.43e-06,2,313.5564,66.9409,4.684
+13,sdpa+compile,PASS,1.43e-06,2,313.5564,67.7587,4.628
+13,sdpa+fp16,PASS,0.00152,1.16e+04,313.5564,27.1072,11.567
+13,sdpa+compile+fp16,PASS,0.00152,1.16e+04,313.5564,27.1695,11.541
+=================== END SUMMARY ===================
