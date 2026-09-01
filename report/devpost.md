@@ -19,12 +19,15 @@ levers:
 1. **`scaled_dot_product_attention` (FlashAttention)** — turns the baseline's
    `O(S²)` materialized score matrix into an `O(S)` fused kernel. This is what
    makes `seq_len=100000` runnable at all.
-2. **Internal fp16 autocast under fp32 grading** — uses the GPU tensor cores;
-   the 2% relative tolerance leaves ~40× headroom over fp16 rounding, with
-   fp32-accumulated reductions.
+2. **Internal fp16 autocast under fp32 grading** (`T3_AUTOCAST=fp16`) — uses the
+   GPU tensor cores. Shipped **off by default**: the gate is `abs≤0.002` *or*
+   `rel≤0.02`, and for outputs whose reference is near zero only the absolute
+   test applies, where fp16 error accumulated over 4 layers does not fit. We took
+   the honest trade and kept the delivered path exact.
 3. **Self-applied `torch.compile`** — Inductor fuses LayerNorm/bias/GELU into
-   Triton kernels; CUDA graphs for launch-bound small shapes.
-4. **Batch chunking** for the extreme long-sequence shape to fit 16 GB.
+   Triton kernels; CUDA graphs for launch-bound small shapes. Needs sm≥7.0.
+4. **Batch chunking into a preallocated output** for the extreme long-sequence
+   shape, sized from the VRAM actually free at runtime.
 
 ## What we built it with
 - **Development tools:** Claude (Claude Code) for workload analysis, design, and

@@ -21,9 +21,12 @@ GPU, shape 14 runs in [MS] ms, [TOK/S] tokens/second, under [GB] GB." (Show the
 shape-14 log: correctness at truncated length, then full-length timing.)
 
 **1:25–2:05 — Speed across the board.**
-"For the other shapes we add fp16 tensor-core compute — safe within the 2%
-tolerance — and self-applied torch.compile. Here's the full sweep." (Show
-`run_all` / results table + `speedups.png`: median [MEDIAN]×, all PASS.)
+"For the other shapes the win is the same fused attention kernel, plus
+self-applied torch.compile where the GPU supports it. We also built an fp16
+tensor-core path — but the grader's absolute tolerance is unforgiving for
+near-zero outputs, so we ship it off by default and stay exact. Here's the full
+sweep." (Show `run_all` / results table + `speedups.png`: median [MEDIAN]×,
+all PASS, max_abs about 1e-6.)
 
 **2:05–2:35 — How it stays correct & drop-in.**
 "We keep every baseline parameter name and rewrite only the forward, so the

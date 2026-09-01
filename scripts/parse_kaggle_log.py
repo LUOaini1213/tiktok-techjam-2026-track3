@@ -31,14 +31,49 @@ SPEED_RE = re.compile(r"speedup\s*:\s*([0-9.eE+-]+)x")
 
 
 def load_stdout(path):
+    """Accept either the JSON event array from `kaggle kernels output` or a
+    plain-text log (e.g. copied from the Kaggle web console)."""
     with open(path, encoding="utf-8") as f:
-        events = json.load(f)
+        raw = f.read()
+    try:
+        events = json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
     return "".join(e["data"] for e in events if e.get("stream_name") == "stdout")
+
+
+def parse_summary_block(text):
+    """The driver ends with a compact CSV block; prefer it when present.
+
+    Format: shape,pass,max_abs,max_rel,baseline_ms,opt_ms,speedup,note
+    It is authoritative because the driver writes it from the values it
+    measured, rather than us re-scraping prose.
+    """
+    head = re.escape("SUMMARY (copy from here)")
+    tail = re.escape("END SUMMARY")
+    m = re.search(head + "(.*?)" + tail, text, re.S)
+    if not m:
+        return None
+    out = {}
+    for line in m.group(1).splitlines():
+        cells = line.split(",")
+        if len(cells) < 7 or not cells[0].strip().isdigit():
+            continue
+        idx = int(cells[0])
+        note = ",".join(cells[7:]).strip() if len(cells) > 7 else ""
+        out[idx] = {
+            "pass": cells[1].strip(), "max_abs": cells[2].strip(),
+            "max_rel": cells[3].strip(), "baseline_ms": cells[4].strip(),
+            "opt_ms": cells[5].strip(), "speedup": cells[6].strip(),
+            "notes": note,
+        }
+    return out or None
 
 
 def main():
     log = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "results", "kaggle.log")
     text = load_stdout(log)
+    summary = parse_summary_block(text)
     env = ""
     m = re.search(r"gpu .*", text)
     if m:
@@ -57,13 +92,16 @@ def main():
         row = {"shape": idx, "B": b, "D": d, "H": h, "S": s, "L": l, "F": f,
                "pass": "", "max_abs": "", "max_rel": "", "baseline_ms": "",
                "opt_ms": "", "speedup": "", "notes": ""}
-        sm = SUMMARY_RE.search(blk)
-        if sm:
-            row["pass"], row["max_abs"], row["max_rel"] = sm.group(1), sm.group(2), sm.group(3)
-        for rx, key in ((BASE_RE, "baseline_ms"), (OPT_RE, "opt_ms"), (SPEED_RE, "speedup")):
-            mm = rx.search(blk)
-            if mm:
-                row[key] = mm.group(1)
+        if summary and idx in summary:
+            row.update(summary[idx])
+        else:
+            sm = SUMMARY_RE.search(blk)
+            if sm:
+                row["pass"], row["max_abs"], row["max_rel"] = sm.group(1), sm.group(2), sm.group(3)
+            for rx, key in ((BASE_RE, "baseline_ms"), (OPT_RE, "opt_ms"), (SPEED_RE, "speedup")):
+                mm = rx.search(blk)
+                if mm:
+                    row[key] = mm.group(1)
         if "RuntimeError" in blk and not sm:
             em = re.search(r"(RuntimeError|OutOfMemoryError)[^\n]*", blk)
             row["notes"] = (em.group(0)[:80] if em else "error")
@@ -83,6 +121,12 @@ def main():
         mr = re.search(r"max_rel=([0-9.eE+-]+)", tc.group(0)); ma = re.search(r"max_abs=([0-9.eE+-]+)", tc.group(0))
         if mr: row14["max_rel"] = mr.group(1)
         if ma: row14["max_abs"] = ma.group(1)
+    if summary and 14 in summary:
+        for k in ("pass", "max_abs", "max_rel"):
+            if summary[14][k]:
+                row14[k] = summary[14][k]
+        if summary[14]["notes"]:
+            row14["notes"] = summary[14]["notes"]
     if full:
         row14["notes"] = full.group(0).strip()[:120]
     elif re.search(r"shape14 full-seq", blk14):
