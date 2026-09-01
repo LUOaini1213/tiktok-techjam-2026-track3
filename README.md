@@ -200,7 +200,57 @@ T3_COMPILE=1 T3_AUTOCAST=fp16 python run_all.py --shapes 1 --out /tmp/both.csv
 ```
 
 Environment toggles: `T3_AUTOCAST` (auto|fp16|bf16|off), `T3_COMPILE` (1|0),
-`T3_COMPILE_MODE`, `T3_FP32_FFN` (1|0), `T3_CHUNK_BS`.
+`T3_COMPILE_MODE`, `T3_FP32_FFN` (1|0), `T3_CHUNK_BS`, `T3_TRITON` (1|0).
+
+## The hand-written Triton kernel
+
+`kernels/fused_layernorm.py` is a fused **residual-add + LayerNorm** written in
+Triton. The fusion target was chosen deliberately: `nn.LayerNorm` is already a
+tuned CUDA kernel and reimplementing it alone is a predictable loss, but eager
+PyTorch does **not** fuse the pre-norm pattern a Transformer block repeats twice
+per layer —
+
+```python
+x = x + sublayer(norm(x))     # the add is one kernel, the norm is another
+```
+
+— and each of those touches the whole `[B,S,D]` activation. Fusing them turns
+four passes over that tensor into two. Reductions accumulate in fp32 regardless
+of storage dtype, so the fusion spends none of the accuracy budget.
+
+**At the operator level it wins.** Measured on a T4 at the real activation sizes
+(`results/triton_bench_t4.csv`, raw log `results/kaggle_t4_triton_bench.log`):
+
+| case | rows × D | eager ms | Inductor ms | **Triton ms** | vs eager | vs Inductor |
+|---|---|---|---|---|---|---|
+| shape 6 | 1.28M × 128 | 20.660 | 11.004 | **10.763** | **1.92×** | 1.02× |
+| shape 13 | 65536 × 128 | 1.082 | 0.657 | **0.602** | **1.80×** | 1.09× |
+| shape 1/5/9–11 | 8192 × 128 | 0.236 | **0.148** | 0.159 | 1.49× | 0.93× |
+| shape 7 | 8192 × 32 | 0.092 | 0.102 | **0.076** | 1.21× | **1.34×** |
+| shape 8 | 8192 × 1024 | 0.719 | 0.673 | **0.649** | 1.11× | 1.04× |
+| shape 2 | 128 × 128 | **0.050** | 0.114 | 0.086 | 0.58× | 1.32× |
+
+It beats eager on 5 of 6 and Inductor on 5 of 6, with `max_abs ≤ 1.43e-6`. The
+one real loss to eager is the 128-row case, and it is explainable rather than
+mysterious: 128 rows is 128 Triton programs, which does not fill a T4, while
+eager's two kernels are each small enough that launching two of them is cheaper
+than under-occupying one.
+
+**End to end it is a net loss, and we ship it off.** Enabling it
+(`T3_TRITON=1`) scores **1.929×** median against the shipped path's **2.282×**,
+still 13/13 PASS (`results/results_t4_triton.csv`).
+
+The reason is integration, not the kernel. Calling a raw Triton kernel from
+inside a `torch.compile` region breaks the graph, so `T3_TRITON=1` turns
+compilation off. We therefore trade *one* fusion we win for *all* the other
+fusions Inductor was doing — the other LayerNorm, the bias+GELU epilogue, the
+pointwise chains. Winning a single operator by 9% does not pay for losing the
+rest.
+
+The fix is real and we ran out of time for it: register the kernel through
+`torch.library` so Inductor can call it *inside* the compiled graph instead of
+being switched off around it. Until then the honest configuration is the one
+that is faster, and the kernel stays behind a flag with its numbers published.
 
 ## Correctness notes
 
@@ -227,9 +277,9 @@ Environment toggles: `T3_AUTOCAST` (auto|fp16|bf16|off), `T3_COMPILE` (1|0),
   2x while restoring real margin. That is the obvious next experiment.
 - The stage ablation covers 4 representative shapes on one GPU, one run each;
   the 13-shape sweeps are the ones with repeat trials behind them.
-- Hand-written Triton kernels (fused LayerNorm+residual, fused bias+GELU) were
-  scoped but **not built** — there is no `kernels/` directory. The core path is
-  SDPA + `torch.compile`, and Inductor already fuses those epilogues.
+- The fused bias+GELU epilogue kernel was scoped and not built; Inductor
+  already fuses it. The fused add+LayerNorm kernel **was** built and measured —
+  see below — and is off by default for a reason we can name.
 - A hand-written Turing FlashAttention kernel is out of scope (multi-day effort).
 - **`--dtype bfloat16` fails, and not because of us.** The harness accepts it
   (`run_all.py --dtype bfloat16`), and we do fail it: 6131/131072 elements,

@@ -147,6 +147,96 @@ def _ablation(device):
     os.environ["T3_COMPILE"] = "1"
 
 
+
+# ---- hand-written Triton kernel: does it actually beat the alternatives? -----
+_TRITON_RESULTS = []
+
+
+def _triton_bench(device):
+    """Time fused add+LayerNorm three ways on the real activation sizes.
+
+    eager    : x + y then nn.LayerNorm -- two kernels, four passes over [rows, D]
+    inductor : the same two ops under torch.compile, which fuses them
+    triton   : our hand-written kernel, one pass
+
+    The shapes are (rows, D) taken from the graded sweep: rows = B*S.
+    """
+    import torch
+    import torch.nn as nn
+    # In the repo the kernels are a package; in the single-file Kaggle build the
+    # same code is inlined above, so fall back to module scope.
+    try:
+        from kernels import HAVE_TRITON, fused_add_layernorm
+    except Exception:
+        g = globals()
+        HAVE_TRITON = g.get("HAVE_TRITON", False)
+        fused_add_layernorm = g.get("fused_add_layernorm")
+        if fused_add_layernorm is None:
+            print("triton kernels unavailable in this build", flush=True)
+            return
+    print(f"HAVE_TRITON={HAVE_TRITON}", flush=True)
+    if not HAVE_TRITON:
+        return
+
+    CASES = [
+        (64 * 128, 128, "shape 1/5/9-11  B*S=8192,  D=128"),
+        (1 * 128, 128, "shape 2         B*S=128,   D=128"),
+        (10000 * 128, 128, "shape 6         B*S=1.28M, D=128"),
+        (64 * 128, 32, "shape 7         B*S=8192,  D=32"),
+        (64 * 128, 1024, "shape 8         B*S=8192,  D=1024"),
+        (64 * 1024, 128, "shape 13        B*S=65536, D=128"),
+    ]
+
+    def timeit(fn, warmup=20, iters=100):
+        for _ in range(warmup):
+            fn()
+        torch.cuda.synchronize()
+        st = torch.cuda.Event(enable_timing=True); en = torch.cuda.Event(enable_timing=True)
+        s = []
+        for _ in range(iters):
+            st.record(); fn(); en.record(); torch.cuda.synchronize()
+            s.append(st.elapsed_time(en))
+        s.sort()
+        return s[len(s) // 2]
+
+    print("triton bench: case,rows,D,eager_ms,inductor_ms,triton_ms,"
+          "vs_eager,vs_inductor,max_abs", flush=True)
+    for rows, d, label in CASES:
+        x = torch.randn(rows, d, device=device, dtype=torch.float32)
+        r = torch.randn(rows, d, device=device, dtype=torch.float32)
+        ln = nn.LayerNorm(d).to(device)
+
+        def eager():
+            t = x + r
+            return ln(t), t
+
+        compiled = torch.compile(eager, dynamic=False)
+
+        def triton_fn():
+            return fused_add_layernorm(x, r, ln.weight, ln.bias, ln.eps)
+
+        with torch.inference_mode():
+            ref_out, ref_sum = eager()
+            got_out, got_sum = triton_fn()
+            mabs = max((got_out - ref_out).abs().max().item(),
+                       (got_sum - ref_sum).abs().max().item())
+            e = timeit(eager)
+            try:
+                compiled()
+                c = timeit(compiled)
+            except Exception as ex:
+                print("  inductor failed:", str(ex)[:80], flush=True)
+                c = float("nan")
+            t = timeit(triton_fn)
+
+        print(f"TRI,{label},{rows},{d},{e:.4f},{c:.4f},{t:.4f},"
+              f"{e/t:.3f},{c/t:.3f},{mabs:.3g}", flush=True)
+        _TRITON_RESULTS.append((label, rows, d, f"{e:.4f}", f"{c:.4f}", f"{t:.4f}",
+                                f"{e/t:.3f}", f"{c/t:.3f}", f"{mabs:.3g}"))
+        del x, r, ln
+        torch.cuda.empty_cache()
+
+
 def _main():
     import os
     import torch
@@ -159,6 +249,8 @@ def _main():
           f"cuda {torch.version.cuda} | cc {torch.cuda.get_device_capability(device)}", flush=True)
 
     only = os.environ.get("T3_ONLY", "all").strip().lower()
+    if only == "triton":
+        SH_FILTER = []
 
     SH = [
         (1, 64, 128, 4, 128, 4, 128), (2, 1, 128, 4, 128, 4, 128),
@@ -200,6 +292,13 @@ def _main():
                 pass
             torch.cuda.empty_cache()
 
+    if only in ("all", "triton"):
+        print("\n##### TRITON KERNEL BENCH #####", flush=True)
+        try:
+            _triton_bench(device)
+        except Exception as e:
+            print("TRITON BENCH ERROR:", str(e)[:200], flush=True)
+
     if only in ("all", "ablation"):
         print("\n##### STAGE ABLATION #####", flush=True)
         try:
@@ -209,7 +308,7 @@ def _main():
 
     print("\n##### SHAPE 14 : optimized-only (baseline infeasible ~20.5 TB) #####", flush=True)
     try:
-        if only in ("1-13", "ablation"):
+        if only in ("1-13", "ablation", "triton"):
             raise _Skip
         _shape14(device)
     except _Skip:

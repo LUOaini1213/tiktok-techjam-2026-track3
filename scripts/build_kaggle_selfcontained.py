@@ -76,7 +76,7 @@ def build_selector(only, extra_env):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", default="all",
-                    choices=["all", "1-13", "14", "ablation"],
+                    choices=["all", "1-13", "14", "ablation", "triton"],
                     help="which section of the sweep the kernel runs (default: all)")
     ap.add_argument("--id", default="wenjiluo/track3-bench",
                     help="Kaggle kernel id to push to")
@@ -100,14 +100,27 @@ def main():
     prologue = fut + "\n" + BOOTSTRAP + "\n" + build_selector(args.only, args.env)
     bench = bench.replace(fut, prologue, 1)
 
+    # The Kaggle kernel is a single file, so the hand-written Triton kernels
+    # have to be inlined too, and the package import in user_optimized.py
+    # rewritten to point at the names that inlining leaves in scope.
+    tk = read(os.path.join("kernels", "fused_layernorm.py"))
+    tk = tk.replace("from __future__ import annotations", "")
+
     uo = read("user_optimized.py")
     uo = uo.replace("from __future__ import annotations\n", "")
     uo = uo.replace("from torch_transformer_benchmark import BaselineTransformer\n", "")
+    uo = uo.replace("""try:
+    from kernels import can_fuse, fused_add_layernorm
+    HAVE_KERNELS = True
+except Exception:  # the package is optional; the model works without it
+    HAVE_KERNELS = False""", "HAVE_KERNELS = True")
 
     driver = read(os.path.join("scripts", "_kaggle_driver.py"))
 
     combined = (
         bench
+        + "\n\n# ====== kernels/fused_layernorm.py (inlined) ======\n\n"
+        + tk
         + "\n\n# ================= user_optimized.py (inlined) =================\n\n"
         + uo
         + "\n\n# ================= sweep driver =================\n\n"

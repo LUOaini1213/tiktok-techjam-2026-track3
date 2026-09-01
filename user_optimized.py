@@ -29,6 +29,8 @@ Ablation / robustness toggles via environment variables (see README):
   T3_COMPILE_MODE = default | reduce-overhead | max-autotune  (override)
   T3_FP32_FFN   = 1 | 0                          (default 0; force FFN+LN fp32)
   T3_CHUNK_BS   = <int>                          (override batch chunk size)
+  T3_TRITON     = 1 | 0                          (default 0; hand-written fused
+                                                  add+LayerNorm, disables compile)
 """
 
 from __future__ import annotations
@@ -41,6 +43,12 @@ import torch.nn.functional as F
 
 # Reuse the reference model definition so parameter names match exactly.
 from torch_transformer_benchmark import BaselineTransformer
+
+try:
+    from kernels import can_fuse, fused_add_layernorm
+    HAVE_KERNELS = True
+except Exception:  # the package is optional; the model works without it
+    HAVE_KERNELS = False
 
 
 # Live [chunk, S, max(D, ffn)] intermediates a block keeps alive simultaneously.
@@ -72,6 +80,13 @@ class UserOptimizedTransformer(BaselineTransformer):
         self._compile_ok = _env_flag("T3_COMPILE", True)
         self._can_compile = False  # set in _plan: Triton needs CUDA capability >= 7.0
         self._fp32_ffn = _env_flag("T3_FP32_FFN", False)
+        # Hand-written Triton fused add+LayerNorm. Off by default until measured;
+        # it is an alternative to Inductor rather than a complement, and calling
+        # a raw Triton kernel from inside a compiled region breaks the graph, so
+        # asking for one turns the other off.
+        self._triton = HAVE_KERNELS and _env_flag("T3_TRITON", False)
+        if self._triton:
+            self._compile_ok = False
 
     # ---- one-time device/shape aware planning -------------------------------
     def _plan(self, x: torch.Tensor) -> None:
@@ -207,8 +222,18 @@ class UserOptimizedTransformer(BaselineTransformer):
         return layer.ffn_out(F.gelu(layer.ffn_in(h2), approximate="none"))
 
     def _block(self, layer, x, mask, causal, all_valid):
-        x = x + self._attention(layer.attention, layer.norm1(x), mask, causal, all_valid)
-        x = x + self._ffn(layer, layer.norm2(x))
+        attn = self._attention(layer.attention, layer.norm1(x), mask, causal, all_valid)
+        if self._triton and can_fuse(attn):
+            # LayerNorm(x + attn) in one pass instead of an add kernel followed
+            # by a norm kernel. norm1 deliberately stays on PyTorch: there is no
+            # preceding add to fuse it with there, and nn.LayerNorm on its own is
+            # already a tuned CUDA kernel we have no reason to beat.
+            h, x = fused_add_layernorm(attn, x, layer.norm2.weight,
+                                       layer.norm2.bias, layer.norm2.eps)
+        else:
+            x = x + attn
+            h = layer.norm2(x)
+        x = x + self._ffn(layer, h)
         if mask is not None and not all_valid:
             x = x.masked_fill(~mask[..., None], 0)
         return x

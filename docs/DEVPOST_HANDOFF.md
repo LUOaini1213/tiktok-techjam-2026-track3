@@ -148,11 +148,28 @@ That run is fp16, and for this shape that is forced rather than chosen. In fp32 
 
 $$2 \cdot 32 \cdot 10^5 \cdot 1024 \cdot 4\ \text{bytes} \;=\; 26.2\ \text{GB} \;>\; 15.64\ \text{GB}$$
 
-committed before a single activation. Correctness for shape 14 is therefore established separately, in **fp32**, at a truncated $S$ where the reference still fits — PASS at `max_abs` $= 1.19	imes10^{-6}$ — and SDPA's mathematics does not depend on $S$.
+committed before a single activation. Correctness for shape 14 is therefore established separately, in **fp32**, at a truncated $S$ where the reference still fits — PASS at `max_abs` $= 1.19\times10^{-6}$ — and SDPA's mathematics does not depend on $S$.
 
 **2. The Kaggle API silently gives you the wrong GPU.** `torch.compile`, real FlashAttention and fp16 tensor cores were all marked "not measured" for most of this project, because the API-allocated card is a Tesla **P100** (`sm_60`) where Triton will not build. The kernels API *does* let you choose — `machine_shape` / `--accelerator` — but the accepted values (`NvidiaTeslaT4`, `NvidiaTeslaP100`, `Tpu1VmV38`) appear only in the SDK docstring for `ApiSaveKernelRequest`, and **anything unrecognised is silently normalised back to a P100**. Our first two guesses looked like successful requests and were not. We confirmed the right one by pushing a throwaway kernel that printed `get_device_name`.
 
 **3. Two GPUs make an accidental ablation.** The same code scores 2.065× on the P100 (SDPA alone) and 2.282× on the T4 (SDPA + compile + FlashAttention). Worth stating plainly: the T4's *baselines* are **slower** than the P100's — 318.7 ms against 168.6 ms on shape 13 — because the P100 has more fp32 throughput and roughly twice the memory bandwidth. Our ratio improves on the T4 anyway, because the optimized path gains compilation and FlashAttention there while the baseline stays bandwidth-bound. A speedup is a ratio, and it matters which side moved.
+
+**4. We wrote the kernel, and it lost where it counted.** The track is named "implement a GPU kernel", so composing `scaled_dot_product_attention` with `torch.compile` — however well measured — leaves an obvious gap. `kernels/fused_layernorm.py` closes it: a fused **residual-add + LayerNorm** in Triton. The target was picked on purpose. `nn.LayerNorm` alone is already a tuned CUDA kernel and rewriting it is a predictable loss; what eager PyTorch does *not* fuse is the pre-norm pattern a block repeats twice per layer, $x = x + \mathrm{sublayer}(\mathrm{norm}(x))$, where the add and the norm each traverse the full $[B, S, D]$ activation. Fusing them takes four passes down to two.
+
+**At the operator level it wins.** On a T4, at the real activation sizes:
+
+| case | rows $\times$ D | eager | Inductor | **Triton** | vs eager | vs Inductor |
+|---|---|---|---|---|---|---|
+| shape 6 | 1.28M $\times$ 128 | 20.660 ms | 11.004 ms | **10.763 ms** | **1.92×** | 1.02× |
+| shape 13 | 65536 $\times$ 128 | 1.082 ms | 0.657 ms | **0.602 ms** | **1.80×** | 1.09× |
+| shape 7 | 8192 $\times$ 32 | 0.092 ms | 0.102 ms | **0.076 ms** | 1.21× | **1.34×** |
+| shape 2 | 128 $\times$ 128 | **0.050 ms** | 0.114 ms | 0.086 ms | 0.58× | 1.32× |
+
+Five of six against eager, five of six against Inductor, at `max_abs` $\le 1.43\times10^{-6}$. The single real loss is the 128-row case, and it is explainable rather than mysterious: 128 rows is 128 Triton programs, which does not fill a T4, while eager's two kernels are each small enough that launching two beats under-occupying one.
+
+**End to end it is a net loss, so we ship it off.** With `T3_TRITON=1` the sweep scores **1.929×** median against the shipped **2.282×** — still 13/13 PASS. The cause is integration, not the kernel: calling a raw Triton kernel from inside a `torch.compile` region breaks the graph, so enabling ours turns compilation off, and we trade *one* fusion we win for *every* fusion Inductor was doing elsewhere. Winning one operator by 9% does not pay for losing the rest. The fix is `torch.library` registration so Inductor can call it from inside the graph, and we ran out of time for it.
+
+So the kernel exists, it is correct, it beats both alternatives on its own benchmark, and it is disabled — with all four of those numbers published rather than the flattering one.
 
 ## Challenges we ran into
 
@@ -194,10 +211,11 @@ over near-zero references — and why a `max_abs` of $2.04\times10^{-3}$ is disq
 - **A memory bug can surface one line away from its cause.** The OOM appeared in the attention and lived in the concat.
 - **Cheap infrastructure facts dominate expensive optimization work.** One undocumented string, `NvidiaTeslaT4`, was worth more than any kernel change we made: it unlocked three levers at once.
 - **Audit your own claims adversarially.** Four of ours were wrong, and all four had survived several careful re-readings by the people who wrote them.
+- **A faster operator is not a faster program.** Our kernel beats Inductor on five of six sizes and still loses end to end, because switching it on switches compilation off. The unit you benchmark has to be the unit you ship.
 
 ## What's next
 
-Hand-written Triton kernels — a fused LayerNorm+residual and a fused bias+GELU epilogue — beyond what Inductor already fuses; a Turing-specific FlashAttention kernel is a multi-day effort we scoped and did not attempt. The padded fallback still materializes a dense $[B,1,S,S]$ bias, giving back exactly the $O(S^2)$ memory SDPA exists to avoid; the graded path never takes it, but making it memory-efficient is unfinished work rather than a solved problem.
+Registering the Triton kernel through `torch.library` so Inductor can call it inside the compiled graph instead of being switched off around it — that single change decides whether the kernel is a curiosity or a win. The fused bias+GELU epilogue was scoped and dropped, since Inductor already fuses it; a Turing-specific FlashAttention kernel is a multi-day effort we scoped and did not attempt. The padded fallback still materializes a dense $[B,1,S,S]$ bias, giving back exactly the $O(S^2)$ memory SDPA exists to avoid; the graded path never takes it, but making it memory-efficient is unfinished work rather than a solved problem.
 
 And the experiment we ran out of time for: a mixed assignment — fp16 matmuls with selected fp32 reductions — that keeps most of the $2\times$ while restoring a real margin. Somewhere between $0.98\times$ and $1049\times$ there is a configuration worth shipping.
 

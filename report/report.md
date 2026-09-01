@@ -139,9 +139,15 @@ Figures: `figures/memory_wall.png` (the 20.5 TB wall), `figures/speedups.png`
 - The padded fallback still builds a dense `[B,1,S,S]` bias, reintroducing the
   `O(S^2)` allocation SDPA avoids. The graded path (`padding_ratio=0`) never
   takes it; making it memory-efficient is unfinished work.
-- Optional hand-written Triton kernels (fused LayerNorm+residual, fused
-  bias+GELU) beyond what Inductor already fuses; and a Turing-specific
-  FlashAttention kernel (multi-day).
+- The fused add+LayerNorm Triton kernel is written and measured
+  (`kernels/fused_layernorm.py`): it beats eager on 5 of 6 real activation sizes
+  (up to 1.92×) and Inductor on 5 of 6 (up to 1.34×), at `max_abs ≤ 1.43e-6`.
+  It is **off by default** because enabling it forces `torch.compile` off — a raw
+  Triton call breaks the compiled graph — and trading one won fusion for all of
+  Inductor's others is a net loss end to end: 1.929× against 2.282×. The fix is
+  `torch.library` registration so Inductor can call it inside the graph.
+- The fused bias+GELU epilogue was scoped and not built; Inductor already fuses
+  it. A Turing-specific FlashAttention kernel remains a multi-day effort.
 
 ## 7. Reproducibility
 

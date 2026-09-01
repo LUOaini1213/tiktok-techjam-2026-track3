@@ -95,6 +95,30 @@ which does not fit a free 16 GB GPU at all, so fp16 is the only regime in which
 the comparison exists. The truncated correctness check that backs this shape is
 fp32, like every graded shape.
 
+## The hand-written Triton kernel
+
+`kernels/fused_layernorm.py` fuses the residual add with the LayerNorm that
+follows it — a pattern eager PyTorch runs as two kernels and four passes over
+the `[B,S,D]` activation. Measured on a T4 at the real sizes
+(`triton_bench_t4.csv`):
+
+| case | rows × D | eager | Inductor | Triton | vs eager | vs Inductor |
+|---|---|---|---|---|---|---|
+| shape 6 | 1.28M × 128 | 20.660 | 11.004 | **10.763** | **1.92×** | 1.02× |
+| shape 13 | 65536 × 128 | 1.082 | 0.657 | **0.602** | **1.80×** | 1.09× |
+| shape 1/5/9–11 | 8192 × 128 | 0.236 | **0.148** | 0.159 | 1.49× | 0.93× |
+| shape 7 | 8192 × 32 | 0.092 | 0.102 | **0.076** | 1.21× | **1.34×** |
+| shape 8 | 8192 × 1024 | 0.719 | 0.673 | **0.649** | 1.11× | 1.04× |
+| shape 2 | 128 × 128 | **0.050** | 0.114 | 0.086 | 0.58× | 1.32× |
+
+Beats eager on 5 of 6, Inductor on 5 of 6, `max_abs ≤ 1.43e-6`.
+
+**And end to end it loses:** 1.929× median with `T3_TRITON=1` against 2.282×
+shipped, still 13/13 PASS. A raw Triton call breaks a compiled graph, so
+enabling the kernel disables `torch.compile`, and one won fusion does not pay
+for every fusion Inductor was doing elsewhere. Off by default; the fix is
+`torch.library` registration so Inductor can call it from inside the graph.
+
 ## Cross-GPU: what the hardware is worth
 
 The same code on two free cards, both fp32, both 13/13 PASS:

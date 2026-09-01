@@ -22,6 +22,8 @@ logs/
 !results/kaggle_t4_ablation.log
 !results/kaggle_t4_fp16_run.log
 !results/kaggle_t4_shape14.log
+!results/kaggle_t4_triton_bench.log
+!results/kaggle_t4_triton_e2e.log
 .DS_Store
 .kaggle_upload/
 .kaggle_out*/
