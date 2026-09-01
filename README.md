@@ -10,8 +10,8 @@ output numerically identical to the reference implementation (per-element
 | Lever | Effect |
 |---|---|
 | **`F.scaled_dot_product_attention` (FlashAttention)** | Replaces the baseline's `O(S²)` materialized score matrix with an `O(S)` fused kernel. Makes the `seq_len=100000` shape possible at all — the baseline would need **~20.5 TB** just for its attention scores. Measured: the full 100k-token forward completes in **14.6 GB** on a free P100. |
-| **Internal fp16 autocast** (`T3_AUTOCAST=fp16`, **opt-in**) | Lights up the tensor cores. Off by default: across 4 layers, fp16 rounding pushes near-zero outputs past the *absolute* `atol=0.002` gate, and correctness outranks speed. Reductions stay in fp32. |
-| **Self-applied `torch.compile`** | Fuses LayerNorm / bias / GELU epilogues into Triton kernels; independent of the grader passing `--compile-user`. Per-shape mode (CUDA graphs for launch-bound shapes). Needs sm≥7.0, so it is *inactive* on the P100 the numbers below come from. |
+| **Internal fp16 autocast** (`T3_AUTOCAST=fp16`, **opt-in**) | Lights up the tensor cores and roughly **doubles** the median speedup (2.36x -> 4.01x). Shipped **off**: it passes all 13 shapes, but its worst absolute error has already crossed `atol=0.002` and survives on the relative branch alone. Reductions stay in fp32. |
+| **Self-applied `torch.compile`** | Fuses LayerNorm / bias / GELU epilogues into Triton kernels; independent of the grader passing `--compile-user`. Needs sm≥7.0, so it is inactive on a P100. Measured on a T4 it is worth +0.3x on compute-bound shapes and is a **net loss** on the launch-bound one — see the ablation. |
 | **Batch chunking into a preallocated output** (only `seq_len=1e5`) | Keeps activations inside a 16 GB GPU. Chunks are written in place rather than collected and `torch.cat`-ed — the concat holds the pieces *and* the joined result at once, which is what made this shape OOM. |
 
 We keep **every baseline submodule and parameter name unchanged** and rewrite
@@ -90,30 +90,59 @@ table below, and we would rather say so than let the two look interchangeable.
 
 ## Results
 
-Measured on a **free Kaggle Tesla P100** (16 GB, fp32 grading). Full data in
-[`results/results.csv`](results/results.csv); the raw kernel log is committed as
-[`results/kaggle_p100_run.log`](results/kaggle_p100_run.log).
+Two free Kaggle GPUs, both under fp32 grading, both **13/13 gradeable shapes
+PASS**. Raw logs are committed next to every table so each number can be traced
+to the run that produced it.
 
-**13/13 gradeable shapes PASS - median speedup 2.07x - up to 4.00x - max_abs ~1e-6 -
-and shape 14, which the baseline cannot run at all, completes at its full
-`seq_len=100000` inside 14.6 GB.**
+| GPU | what it can run | median speedup | range | worst `max_abs` |
+|---|---|---|---|---|
+| Tesla P100 (`sm_60`) | SDPA only | 2.065x | 1.098x - 4.001x | 1.91e-6 |
+| **Tesla T4 (`sm_75`)** | **SDPA + `torch.compile` + FlashAttention** | **2.357x** | 1.088x - 4.505x | 1.91e-6 |
+| Tesla T4, `T3_AUTOCAST=fp16` | + fp16 tensor cores | 4.014x | 1.320x - 11.528x | 2.04e-3 — *see below* |
 
-| # | B,D,H,S,F | pass | max_abs | baseline ms | opt ms | speedup |
-|---|---|---|---|---|---|---|
-| 1 | 64,128,4,128,128 | PASS | 1.2e-6 | 5.91 | 3.37 | 1.76x |
-| 2 | 1,128,4,128,128 | PASS | 9.5e-7 | 3.16 | 1.48 | 2.14x |
-| 3 | 4,128,4,128,128 | PASS | 9.5e-7 | 3.18 | 1.46 | 2.17x |
-| 4 | 16,128,4,128,128 | PASS | 1.1e-6 | 3.15 | 1.38 | 2.29x |
-| 5 | 128,128,4,128,128 | PASS | 1.4e-6 | 11.00 | 6.19 | 1.78x |
-| 6 | 10000,128,4,128,128 | PASS | 1.9e-6 | 772.3 | 418.0 | 1.85x |
-| 7 | 64,32,4,128,32 | PASS | 9.5e-7 | 4.05 | 1.96 | 2.07x |
-| 8 | 64,1024,4,128,1024 | PASS | 1.9e-6 | 70.9 | 64.6 | 1.10x |
-| 9 | 64,128,1,128,128 | PASS | 1.2e-6 | 3.85 | 3.11 | 1.24x |
-| 10 | 64,128,2,128,128 | PASS | 1.2e-6 | 4.77 | 3.13 | 1.52x |
-| 11 | 64,128,16,128,128 | PASS | 1.4e-6 | 12.55 | 4.91 | 2.56x |
-| 12 | 64,128,4,32,128 | PASS | 1.2e-6 | 3.06 | 1.32 | 2.33x |
-| 13 | 64,128,4,1024,128 | PASS | 1.4e-6 | 168.6 | 42.1 | **4.00x** |
-| 14 | 32,1024,16,100000,1024 | PASS (see below) | 1.2e-6 | *infeasible (~20.5 TB)* | 293377 | n/a |
+Kaggle's API hands out a P100 unless you ask otherwise, which is why the first
+row exists: on `sm_60` Triton will not build, so `torch.compile` never engages
+and SDPA falls back to its memory-efficient backend. Pass
+`--accelerator NvidiaTeslaT4` and the full stack lights up.
+
+Per shape, fp32 (`results/results.csv` = P100, `results/results_t4.csv` = T4):
+
+| # | B,D,H,S,F | P100 base -> opt | P100 | T4 base -> opt | T4 |
+|---|---|---|---|---|---|
+| 1 | 64,128,4,128,128 | 5.91 -> 3.37 | 1.76x | 9.47 -> 4.02 | 2.36x |
+| 2 | 1,128,4,128,128 | 3.16 -> 1.48 | 2.14x | 3.03 -> 0.89 | 3.40x |
+| 3 | 4,128,4,128,128 | 3.18 -> 1.46 | 2.17x | 3.02 -> 1.02 | 2.95x |
+| 4 | 16,128,4,128,128 | 3.15 -> 1.38 | 2.29x | 2.99 -> 1.20 | 2.49x |
+| 5 | 128,128,4,128,128 | 11.00 -> 6.19 | 1.78x | 18.28 -> 9.25 | 1.98x |
+| 6 | 10000,128,4,128,128 | 772.3 -> 418.0 | 1.85x | 1431.8 -> 750.1 | 1.91x |
+| 7 | 64,32,4,128,32 | 4.05 -> 1.96 | 2.07x | 6.28 -> 2.31 | 2.72x |
+| 8 | 64,1024,4,128,1024 | 70.9 -> 64.6 | 1.10x | 127.4 -> 117.1 | 1.09x |
+| 9 | 64,128,1,128,128 | 3.85 -> 3.11 | 1.24x | 6.36 -> 4.97 | 1.28x |
+| 10 | 64,128,2,128,128 | 4.77 -> 3.13 | 1.52x | 7.88 -> 4.94 | 1.60x |
+| 11 | 64,128,16,128,128 | 12.55 -> 4.91 | 2.56x | 22.31 -> 7.07 | 3.16x |
+| 12 | 64,128,4,32,128 | 3.06 -> 1.32 | 2.33x | 2.97 -> 1.52 | 1.95x |
+| 13 | 64,128,4,1024,128 | 168.6 -> 42.1 | **4.00x** | 316.8 -> 70.3 | **4.51x** |
+
+One honest observation from that table: **the T4's baselines are slower than the
+P100's** (shape 13: 316.8 ms vs 168.6 ms). The P100 has more fp32 throughput and
+about twice the memory bandwidth. The T4 ratios are better anyway because our
+path picks up compile and FlashAttention there while the baseline stays
+bandwidth-bound. A speedup is a ratio; it is worth saying which side moved.
+
+### fp16 is twice as fast, and we still ship fp32
+
+`T3_AUTOCAST=fp16` passes all 13 shapes at a **median 4.014x**, up to 11.53x on
+shape 13. We ship it **off**. The reason is one number: its worst-case absolute
+error is `max_abs = 0.0020388` on shape 6, which has **already crossed the
+`atol=0.002` gate**. It passes only because the rule is
+`abs<=0.002` **OR** `rel<=0.02` and that element's reference value happened to be
+large enough (`|ref| >= 0.102`) for the relative branch to catch it.
+
+Nothing makes that repeatable. Put the same error on a near-zero reference and
+the element fails, and one failing element fails the shape and forfeits the
+speed score entirely. The shipped fp32 path sits **1049x inside** the same gate.
+We took the margin. The flag is documented, measured, and yours if you want the
+other side of the trade — full numbers in [`results/ablation.md`](results/ablation.md).
 
 ### Shape 14: the one the baseline cannot run
 
@@ -139,6 +168,9 @@ is forced, not chosen: an fp32 input for this shape is
 of unavoidable tensors before a single activation, which no free 16 GB GPU can
 hold. In fp16 the pair is 13.1 GB total and it fits. The 293 s / 10,907 tok/s /
 14.6 GB figures above are therefore fp16 figures; the 13 graded shapes are not.
+Note this is a **native fp16 run** (the driver casts the whole model and input),
+not the `T3_AUTOCAST` knob — that knob deliberately disables itself whenever the
+incoming dtype is not fp32.
 
 Two caveats we would rather state than hide: the P100 is `sm_60`, so it gets
 neither the real FlashAttention kernel (SDPA falls back to the memory-efficient
@@ -149,8 +181,9 @@ higher. See `report/figures/`.
 ## Ablation
 
 Every stage is selected by environment variable with **no code edits**, so the
-ablation and the delivered path are literally the same code — see
-`results/ablation.md` for the measured table.
+ablation and the delivered path are literally the same code. The measured
+4-shape x 4-stage table is in [`results/ablation.md`](results/ablation.md)
+(machine-readable: `results/ablation_t4.csv`).
 
 Shipped defaults are `T3_AUTOCAST=off`, `T3_COMPILE=1`, i.e. **SDPA + compile**
 (compile activates only on `sm>=7.0`). Pass `--out` so a stage run does not
@@ -183,12 +216,32 @@ Environment toggles: `T3_AUTOCAST` (auto|fp16|bf16|off), `T3_COMPILE` (1|0),
 
 ## Limitations & future work
 
-- fp16 tolerance is checked empirically per shape; a precision ladder
-  (`T3_FP32_FFN`, fp32-SDPA) is available for any shape that fails.
+- fp16 is measured across all 13 shapes, not assumed: it passes, at 4.01x
+  median, with `max_abs` 2.04e-3 against a 2e-3 gate. A precision ladder
+  (`T3_FP32_FFN`, fp32 SDPA) exists for anyone who enables it and needs to claw
+  margin back on a specific shape. What we have *not* done is find a mixed
+  assignment -- fp16 matmuls with selected fp32 stages -- that keeps most of the
+  2x while restoring real margin. That is the obvious next experiment.
+- The stage ablation covers 4 representative shapes on one GPU, one run each;
+  the 13-shape sweeps are the ones with repeat trials behind them.
 - Hand-written Triton kernels (fused LayerNorm+residual, fused bias+GELU) were
   scoped but **not built** — there is no `kernels/` directory. The core path is
   SDPA + `torch.compile`, and Inductor already fuses those epilogues.
 - A hand-written Turing FlashAttention kernel is out of scope (multi-day effort).
+- **`--dtype bfloat16` fails, and not because of us.** The harness accepts it
+  (`run_all.py --dtype bfloat16`), and we do fail it: 6131/131072 elements,
+  `max_abs 0.047`. But so does the *reference compared against itself* recomputed
+  in fp32 — 7603/131072 elements at the identical `max_abs 0.047`. bf16's ulp
+  near 1.0 is 0.0078, four times coarser than `atol=0.002`, so no implementation
+  that reorders a single operation can hold that gate in bf16. The graded
+  configuration is fp32 (the harness default), where we sit ~1049x inside it.
+- The padded (`padding_ratio > 0`) fallback still materializes a dense
+  `[B,1,S,S]` additive bias, i.e. it gives back the `O(S^2)` memory that SDPA
+  exists to avoid. The graded path runs `padding_ratio=0`, where masking is
+  kernel-generated via `is_causal` and no bias is built; the fallback only has to
+  be correct at the small `S` where a mask is actually supplied. Making the
+  padded path memory-efficient too (block-sparse or a folded key-padding mask)
+  is unfinished work, not a solved problem we left out.
 
 ## AI tooling
 

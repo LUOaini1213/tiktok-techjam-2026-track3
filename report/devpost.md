@@ -5,11 +5,12 @@
 
 ## Elevator pitch
 A drop-in, numerically-faithful GPU-optimized Transformer layer that is
-**2.07× median (up to 4.00×)** faster than the reference across the official
-shapes — with all 13 gradeable shapes passing exactly (max_abs ≈ 1e-6) — and it
-turns the `seq_len=100000` case from **impossible into possible**: the baseline
-needs ~20.5 TB just for its attention scores, ours completes that forward in
-**14.6 GB on a free Kaggle P100**.
+**2.36× median (up to 4.51×)** faster than the reference across the official
+shapes — all 13 gradeable shapes passing at `max_abs ≈ 1e-6`, about 1000× inside
+the tolerance gate — and it turns the `seq_len=100000` case from **impossible
+into possible**: the baseline needs ~20.5 TB just for its attention scores, ours
+completes that forward in **14.6 GB on a free Kaggle GPU** (in fp16 — in fp32 the
+input and output alone are 26.2 GB, so no free 16 GB card can hold it either way).
 
 ## How our solution addresses the problem statement
 The task: optimize the runtime of a Transformer forward pass on a GPU while
@@ -21,10 +22,11 @@ levers:
    `O(S²)` materialized score matrix into an `O(S)` fused kernel. This is what
    makes `seq_len=100000` runnable at all.
 2. **Internal fp16 autocast under fp32 grading** (`T3_AUTOCAST=fp16`) — uses the
-   GPU tensor cores. Shipped **off by default**: the gate is `abs≤0.002` *or*
-   `rel≤0.02`, and for outputs whose reference is near zero only the absolute
-   test applies, where fp16 error accumulated over 4 layers does not fit. We took
-   the honest trade and kept the delivered path exact.
+   GPU tensor cores and nearly doubles the median speedup. Shipped **off by
+   default**, for a reason we had to measure to get right: it passes all 13
+   shapes, but its worst absolute error (0.00204) has already crossed the
+   `atol=0.002` gate and survives only on the `OR rel<=0.02` branch. We took the
+   margin over the speed and kept the delivered path ~1000× inside tolerance.
 3. **Self-applied `torch.compile`** — Inductor fuses LayerNorm/bias/GELU into
    Triton kernels; CUDA graphs for launch-bound small shapes. Needs sm≥7.0.
 4. **Batch chunking into a preallocated output** for the extreme long-sequence
@@ -43,12 +45,19 @@ levers:
   official harness; no external data.
 
 ## Results
-- Median speedup across shapes 1–13: **2.07×** (range 1.10×–4.00×), all PASS at
-  `atol=0.002 / rtol=0.02`, `max_abs ≈ 1e-6`. GPU: **free Kaggle Tesla P100**,
-  torch 2.5.1+cu121 — from SDPA alone (P100 is sm_60: no Triton/`torch.compile`
-  and no true FlashAttention kernel, so a T4/A100 would be higher still).
+- Median speedup across shapes 1–13: **2.36×** (range 1.09×–4.51×) on a free
+  **Kaggle Tesla T4**, all PASS at `atol=0.002 / rtol=0.02` with
+  `max_abs ≈ 1e-6`. On a **Tesla P100** (sm_60, where Triton and so
+  `torch.compile` are unavailable) the same code gets 2.07× from SDPA alone.
+- We also measured an **fp16 path at 4.01× median (up to 11.53×)** that passes
+  all 13 shapes — and deliberately ship it **off**. Its worst absolute error,
+  0.00204, has already crossed the `atol=0.002` gate and survives only on the
+  `OR rel<=0.02` branch. That is a coin flip, not a margin; the shipped path sits
+  ~1000× inside the gate. The flag is documented for anyone who wants the trade.
 - Shape 14 (`seq_len=100000`): baseline infeasible (~20.5 TB of scores). Ours
-  **runs it**: 293 s per forward, 10,907 tok/s over 3.2 M tokens, peak **14.6 GB**.
+  **runs it**: 293 s per forward, 10,907 tok/s over 3.2 M tokens, peak **14.6 GB**
+  — in fp16, which for this shape is not a choice: its fp32 input and output are
+  13.1 GB each, 26.2 GB before a single activation.
   Correctness validated at a truncated length where the baseline can run (PASS,
   max_abs 1.2e-6).
 - Full table, ablation and the raw kernel log: see the GitHub repo (`results/`).

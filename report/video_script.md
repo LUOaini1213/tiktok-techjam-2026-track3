@@ -19,15 +19,18 @@ it. So the baseline literally cannot run this shape." (Show `memory_wall.png`.)
 "We reformulate attention with scaled_dot_product_attention — FlashAttention —
 which never materializes that matrix. Same math, O(S) memory. On a free cloud
 GPU — a 16 GB P100 — shape 14 runs: 293 seconds per forward, about 11,000 tokens
-a second, peaking at 14.6 gigabytes." (Show the shape-14 log: correctness at
-truncated length, then the full-length timing line.)
+a second, peaking at 14.6 gigabytes. That run is fp16, and for this shape that
+isn't a shortcut — in fp32 the input and the output alone are 26 gigabytes."
+(Show the shape-14 log: the fp32 correctness check at truncated length, then the
+full-length timing line.)
 
 **1:25–2:05 — Speed across the board.**
 "For the other shapes the win is the same fused attention kernel, plus
 self-applied torch.compile where the GPU supports it. We also built an fp16
-tensor-core path — but the grader's absolute tolerance is unforgiving for
-near-zero outputs, so we ship it off by default and stay exact. Here's the full
-sweep." (Show `run_all` / results table + `speedups.png`: median 2.07x,
+tensor-core path that is nearly twice as fast again — and we ship it turned off.
+It passes every shape, but its worst error has already crossed the absolute
+tolerance and only survives on the relative one. That is luck, not margin. Here's the full
+sweep." (Show `run_all` / results table + `speedups.png`: median 2.36x on a T4 (2.07x on a P100),
 all PASS, max_abs about 1e-6.)
 
 **2:05–2:35 — How it stays correct & drop-in.**
@@ -39,7 +42,7 @@ GELU is exact, fully-masked rows are guarded — zero failed elements." (Show th
 **2:35–3:00 — Free cloud + AI, close.**
 "All of this ran on free Colab/Kaggle GPUs from a laptop with no NVIDIA card,
 driven headlessly. We used Claude to analyze the harness, design the approach,
-and write the kernels — logged in AI_TOOLS.md. From impossible to 2.07x
+and write the kernels — logged in AI_TOOLS.md. From impossible to 2.36x
 faster." (Show repo + headline number.)
 
 ## Capture checklist

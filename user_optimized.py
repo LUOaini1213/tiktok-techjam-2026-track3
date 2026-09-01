@@ -68,6 +68,7 @@ class UserOptimizedTransformer(BaselineTransformer):
         self._autocast_dtype: Optional[torch.dtype] = None
         self._chunk_bs: Optional[int] = None
         self._compiled = None
+        self._graph_output = False  # set in forward() when a CUDA-graph mode is used
         self._compile_ok = _env_flag("T3_COMPILE", True)
         self._can_compile = False  # set in _plan: Triton needs CUDA capability >= 7.0
         self._fp32_ffn = _env_flag("T3_FP32_FFN", False)
@@ -76,7 +77,6 @@ class UserOptimizedTransformer(BaselineTransformer):
     def _plan(self, x: torch.Tensor) -> None:
         if self._planned:
             return
-        self._planned = True
 
         # torch.compile uses the Triton backend, which requires CUDA capability
         # >= 7.0 (Volta+). Older GPUs (e.g. Kaggle's Tesla P100 = sm_60) must run
@@ -92,6 +92,13 @@ class UserOptimizedTransformer(BaselineTransformer):
         # near-zero output elements. Running in the grader's own dtype always
         # passes: fp32 grading -> fp32 (exact), fp16 grading -> fp16 (matches).
         want = os.environ.get("T3_AUTOCAST", "off").strip().lower()
+        if want not in ("off", "fp16", "bf16", "auto"):
+            # Never let a typo or an empty string turn reduced precision ON. The
+            # fp16 path passes with almost no absolute-tolerance margin, so the
+            # unrecognised case has to fail towards the exact path, loudly.
+            print(f"[user_optimized] ignoring unrecognised T3_AUTOCAST={want!r}; "
+                  f"using 'off' (valid: off|fp16|bf16|auto)")
+            want = "off"
         if x.device.type != "cuda" or x.dtype != torch.float32 or want == "off":
             self._autocast_dtype = None
         elif want == "fp16":
@@ -113,7 +120,14 @@ class UserOptimizedTransformer(BaselineTransformer):
         fdim = self.config.ffn_dim
         per_sample = s * max(self.config.d_model, fdim)
         if override is not None:
-            self._chunk_bs = max(1, int(override))
+            try:
+                self._chunk_bs = max(1, int(override))
+            except (TypeError, ValueError):
+                print(f"[user_optimized] ignoring non-integer "
+                      f"T3_CHUNK_BS={override!r}; planning automatically")
+                override = None
+        if override is not None:
+            pass
         elif b * per_sample <= 300_000_000:
             # Whole-batch activations are small by any measure -> never chunk.
             # Keeps every graded shape (1-13) on the single-pass path.
@@ -121,6 +135,11 @@ class UserOptimizedTransformer(BaselineTransformer):
         else:
             cb = max(1, min(b, self._chunk_budget(x) // max(1, per_sample)))
             self._chunk_bs = cb if cb < b else None
+
+        # Only now. Setting it up front means a throw anywhere above would leave
+        # planning permanently "done" with _chunk_bs still None -- which for the
+        # seq_len=1e5 shape is the difference between chunking and an OOM.
+        self._planned = True
 
     def _chunk_budget(self, x: torch.Tensor) -> int:
         """Elements of working-set headroom available for one chunk.
@@ -218,6 +237,11 @@ class UserOptimizedTransformer(BaselineTransformer):
                 if mode is None:
                     mode = "reduce-overhead" if b * x.shape[1] <= 16384 else "default"
                 self._compiled = torch.compile(self._run_full, mode=mode, dynamic=False)
+                # CUDA-graph modes hand back a static buffer that the NEXT call
+                # overwrites. The official harness compares each trial before
+                # calling again so it never sees this, but forward() should
+                # return a tensor its caller owns regardless.
+                self._graph_output = mode in ("reduce-overhead", "max-autotune")
             except Exception:
                 self._compile_ok = False
                 self._compiled = None
@@ -232,6 +256,10 @@ class UserOptimizedTransformer(BaselineTransformer):
             fn = self._compiled if self._compiled is not None else self._run_full
             try:
                 return _invoke(fn, xin, m, av)
+            except _OOM:
+                # Out of memory is a sizing problem, not a compile problem: let
+                # _forward_chunked see it and shrink the chunk.
+                raise
             except Exception:
                 if fn is self._run_full:
                     raise
@@ -244,7 +272,10 @@ class UserOptimizedTransformer(BaselineTransformer):
         if self._chunk_bs is not None and self._chunk_bs < b:  # extreme shape only
             return self._forward_chunked(x, valid_token_mask, core, b)
 
-        return core(x, valid_token_mask, all_valid).to(x.dtype)
+        out = core(x, valid_token_mask, all_valid).to(x.dtype)
+        if self._graph_output and out.data_ptr() != x.data_ptr():
+            out = out.clone()
+        return out
 
     def _forward_chunked(self, x, valid_token_mask, core, b):
         """Batch-chunked forward for the shape whose activations exceed VRAM.
