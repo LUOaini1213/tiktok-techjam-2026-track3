@@ -3,7 +3,7 @@
 Parse a Kaggle kernel log (the JSON event array from `kaggle kernels output`)
 produced by the self-contained sweep, and write results/results.csv.
 
-Usage: python scripts/parse_kaggle_log.py <path-to-track3-bench.log>
+Usage: python scripts/parse_kaggle_log.py <path-to-log> [output.csv]
 """
 from __future__ import annotations
 
@@ -83,6 +83,7 @@ def parse_summary_block(text):
 
 def main():
     log = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "results", "kaggle.log")
+    out_override = sys.argv[2] if len(sys.argv) > 2 else None
     text = load_stdout(log)
     summary = parse_summary_block(text)
     env = ""
@@ -149,7 +150,7 @@ def main():
         row14["notes"] = "full-seq: " + (em.group(0)[:90] if em else "error")
     rows.append(row14)
 
-    out = os.path.join(HERE, "results", "results.csv")
+    out = out_override or os.path.join(HERE, "results", "results.csv")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     fields = ["shape", "B", "D", "H", "S", "L", "F", "pass", "max_abs",
               "max_rel", "baseline_ms", "opt_ms", "speedup", "notes"]
