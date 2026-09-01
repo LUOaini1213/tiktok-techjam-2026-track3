@@ -162,7 +162,7 @@ Hand-written Triton kernels — a fused LayerNorm+residual and a fused bias+GELU
 
 | 文件 | 用途 | 位置 |
 |---|---|---|
-| `track3-submission.zip` | 第 8 项上传（4.6 MB） | `docs/` |
+| `track3-submission.zip` | 第 8 项上传（4.6 MB） | `docs/`，不在 Git 里 — 用 `python scripts/make_submission_zip.py` 重新生成 |
 | `01_results.png` ~ `05_demo.png` | 第 9 项画廊 | `docs/video/gallery/` |
 | `track3_demo.mp4` + `.srt` | 已传 YouTube（https://youtu.be/3aAw-jq1oTM）；源文件留档 | `build/` |
 
