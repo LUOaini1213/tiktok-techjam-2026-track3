@@ -4,6 +4,7 @@
 # generate_random_case, compare_outputs.
 
 _RESULTS = []  # (idx, pass, max_abs, max_rel, base_ms, opt_ms, speedup, note)
+_ABL_RESULTS = []  # (idx, stage, pass, max_abs, max_rel, base_ms, opt_ms, speedup)
 
 
 class _Skip(Exception):
@@ -83,6 +84,69 @@ def _shape14(device):
                      "", "", "", note))
 
 
+
+# ---- stage ablation ---------------------------------------------------------
+# Each stage is selected purely by environment variable, with no code edits, so
+# the numbers below and the delivered path are literally the same code.
+_ABL_CONFIGS = [
+    ("sdpa",              {"T3_AUTOCAST": "off",  "T3_COMPILE": "0"}),
+    ("sdpa+compile",      {"T3_AUTOCAST": "off",  "T3_COMPILE": "1"}),
+    ("sdpa+fp16",         {"T3_AUTOCAST": "fp16", "T3_COMPILE": "0"}),
+    ("sdpa+compile+fp16", {"T3_AUTOCAST": "fp16", "T3_COMPILE": "1"}),
+]
+_ABL_SHAPES = [
+    (1, 64, 128, 4, 128, 4, 128),
+    (12, 64, 128, 4, 32, 4, 128),
+    (8, 64, 1024, 4, 128, 4, 1024),
+    (13, 64, 128, 4, 1024, 4, 128),
+]
+
+
+def _ablation(device):
+    import os
+    import torch
+    dtype = torch.float32
+    print("stage ablation: shape,stage,pass,max_abs,max_rel,baseline_ms,opt_ms,speedup",
+          flush=True)
+    for (idx, b, d, h, sq, l, f) in _ABL_SHAPES:
+        cfg = TransformerConfig(batch_size=b, seq_len=sq, d_model=d, num_heads=h,
+                                ffn_dim=f, num_layers=l, causal=True)
+        cfg.validate()
+        baseline = BaselineTransformer(cfg).to(device, dtype).eval()
+        xt, mt = generate_random_case(cfg, device, dtype, 101234, 0.0, 1.0)
+        bms = _bench(baseline, xt, mt)
+        for name, env in _ABL_CONFIGS:
+            for k, v in env.items():
+                os.environ[k] = v
+            try:
+                # Construct AFTER setting the env: __init__ and the one-shot
+                # _plan() are what read these knobs.
+                opt = UserOptimizedTransformer(cfg)
+                copy_model_weights(baseline, opt, strict=True)
+                opt = opt.to(device, dtype).eval()
+                ok, mabs, mrel = _accuracy(baseline, opt, cfg, device, dtype)
+                oms = _bench(opt, xt, mt)
+                print(f"ABL,{idx},{name},{'PASS' if ok else 'FAIL'},{mabs:.3g},"
+                      f"{mrel:.3g},{bms:.4f},{oms:.4f},{bms/oms:.3f}", flush=True)
+                _ABL_RESULTS.append((idx, name, "PASS" if ok else "FAIL",
+                                     f"{mabs:.3g}", f"{mrel:.3g}", f"{bms:.4f}",
+                                     f"{oms:.4f}", f"{bms/oms:.3f}"))
+            except Exception as e:
+                print(f"ABL,{idx},{name},ERROR,,,,,{str(e)[:80]}", flush=True)
+                _ABL_RESULTS.append((idx, name, "ERROR", "", "", "", "", str(e)[:60]))
+            finally:
+                try:
+                    del opt
+                except Exception:
+                    pass
+                torch.cuda.empty_cache()
+        del baseline, xt, mt
+        torch.cuda.empty_cache()
+    # Restore the shipped defaults for anything that runs after us.
+    os.environ["T3_AUTOCAST"] = "off"
+    os.environ["T3_COMPILE"] = "1"
+
+
 def _main():
     import os
     import torch
@@ -136,13 +200,20 @@ def _main():
                 pass
             torch.cuda.empty_cache()
 
+    if only in ("all", "ablation"):
+        print("\n##### STAGE ABLATION #####", flush=True)
+        try:
+            _ablation(device)
+        except Exception as e:
+            print("ABLATION ERROR:", str(e)[:200], flush=True)
+
     print("\n##### SHAPE 14 : optimized-only (baseline infeasible ~20.5 TB) #####", flush=True)
     try:
-        if only == "1-13":
+        if only in ("1-13", "ablation"):
             raise _Skip
         _shape14(device)
     except _Skip:
-        print("skipped (T3_ONLY=1-13)", flush=True)
+        print("skipped for this T3_ONLY selector", flush=True)
     except Exception as e:
         print("SHAPE 14 ERROR:", str(e)[:200], flush=True)
         _RESULTS.append((14, "ERROR", "", "", "", "", "", str(e)[:60]))
@@ -156,6 +227,12 @@ def _main():
     if sp_vals:
         print(f"# median_speedup={sp_vals[len(sp_vals)//2]:.3f}x "
               f"min={sp_vals[0]:.3f}x max={sp_vals[-1]:.3f}x over {len(sp_vals)} PASS shapes", flush=True)
+    if _ABL_RESULTS:
+        print("# --- stage ablation ---", flush=True)
+        print("abl_shape,stage,pass,max_abs,max_rel,baseline_ms,opt_ms,speedup",
+              flush=True)
+        for r in _ABL_RESULTS:
+            print(",".join(str(x) for x in r), flush=True)
     print("=================== END SUMMARY ===================", flush=True)
 
 

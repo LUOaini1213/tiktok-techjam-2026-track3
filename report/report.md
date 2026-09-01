@@ -1,8 +1,9 @@
 # Track 3 Technical Report — Implement a GPU Kernel for a Transformer Layer
 ### TikTok TechJam 2026
 
-> Export to `report.pdf` before submission (e.g. VS Code Markdown PDF, or
-> `pandoc report.md -o report.pdf`).
+A rendered, shareable version of this report is linked from the repo README.
+To produce a PDF locally: open this file in VS Code with the Markdown PDF
+extension, or run `pandoc report.md -o report.pdf`.
 
 ## 1. Environment
 
@@ -62,7 +63,7 @@ from `scaled_dot_product_attention` alone, since `torch.compile` is unavailable
 on P100 (Triton needs sm≥7.0). Full table: `results/results.csv`; per-step
 breakdown: `results/ablation.md`.
 
-| # | shape [B,D,H,S,F] | speedup | | # | shape | speedup |
+| # | shape [B,D,H,S] | speedup | | # | shape [B,D,H,S] | speedup |
 |---|---|---|---|---|---|---|
 | 1 | 64,128,4,128 | 1.76× | | 8 | 64,1024,4,128 | 1.10× |
 | 2 | 1,128,4,128 | 2.14× | | 9 | 64,128,1,128 | 1.24× |
@@ -88,6 +89,14 @@ Correctness is established at a truncated `seq_len` where the baseline can run
 (PASS, `max_abs 1.2e-6`); SDPA's math is independent of `S`, so that carries to
 1e5. Getting here required the memory fix in §4.4 — before it, the run died in
 the final `torch.cat`, not in the attention.
+
+**Precision.** The truncated correctness check runs in **fp32**, matching the
+graded shapes. The full-length timing runs in **fp16** by necessity: an fp32
+input for this shape is 13.1 GB and its output another 13.1 GB, so 26.2 GB is
+committed before any activation — more than any free 16 GB GPU has. fp16 halves
+that to 13.1 GB and leaves room for the per-chunk working set. So the 293 s /
+10,907 tok/s / 14.61 GB numbers are fp16 numbers, and are labelled as such
+wherever they appear; the 13 graded shapes in the table above are all fp32.
 
 Figures: `figures/memory_wall.png` (the 20.5 TB wall), `figures/speedups.png`
 (per-shape speedup).

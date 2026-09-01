@@ -22,6 +22,9 @@ succeeds and the comparison is apples-to-apples.
 
 ```
 torch_transformer_benchmark.py   official reference & harness (UNMODIFIED)
+tensorflow_transformer_benchmark.py  the TF half of the official problem
+                                 statement, shipped UNMODIFIED for reference;
+                                 this submission is the PyTorch track only
 user_optimized.py                UserOptimizedTransformer — the deliverable
 submission.py                    runs the official main() with our model swapped in
 run_all.py                       sweeps shapes 1–13 -> results/results.csv
@@ -35,8 +38,13 @@ results/ablation.md  report/  docs/AI_TOOLS.md
 
 ## Setup
 
-GPU work runs on **free cloud GPUs** (Google Colab T4 / Kaggle T4×2 or P100);
-the reference `torch`/`triton` are preinstalled there — do not reinstall.
+GPU work runs on **free cloud GPUs** (Google Colab T4 / Kaggle T4 or P100);
+`torch`/`triton` are preinstalled there. One caveat we hit: Kaggle's *default*
+API-allocated card is a Tesla P100 (`sm_60`), which the preinstalled
+torch 2.10+cu128 no longer supports (`arch_list` starts at `sm_70`), so the
+kernel builder detects the mismatch and installs torch 2.5.1+cu121 before
+re-exec'ing. Ask for a T4 instead and no reinstall happens — pass
+`--accelerator NvidiaTeslaT4` to `kaggle kernels push`.
 No local GPU is required (this project was developed on a machine with only an
 Intel iGPU; the tech report states the exact cloud environment used).
 
@@ -48,13 +56,37 @@ python submission.py --causal --device cuda --dtype float32 \
 
 ## Reproduce the results
 
+There are two paths, and it matters which one produced the committed numbers.
+
+**What the committed `results/results.csv` actually came from.** A single
+self-contained Kaggle kernel, built and pushed from this machine, because the
+laptop has no NVIDIA GPU:
+
 ```bash
-python run_all.py --shapes 1-13 --device cuda --dtype float32   # -> results/results.csv
-python scripts/shape14_optimized_only.py --trunc-seq 2048       # shape 14 (Kaggle)
+python scripts/build_kaggle_selfcontained.py --accelerator NvidiaTeslaT4
+kaggle kernels push -p .kaggle_upload/kernel_sc      # runs shapes 1-13, ablation, 14
+kaggle kernels output wenjiluo/track3-bench -p .kaggle_out
+python scripts/parse_kaggle_log.py .kaggle_out/track3-bench.log   # -> results/results.csv
 ```
 
-`run_all.py` runs each shape in a fresh subprocess and parses the harness'
-`summary: PASS/FAIL`, `max_abs`, `max_rel`, and median speedup.
+The builder inlines the unmodified harness, `user_optimized.py` and the sweep
+driver into one script, so the kernel needs no dataset attach. Kaggle's API
+hands out a **P100 by default**; `--accelerator NvidiaTeslaT4` asks for a T4
+instead (the accepted names are `NvidiaTeslaT4`, `NvidiaTeslaP100`,
+`Tpu1VmV38` -- anything else is silently normalised back to a P100).
+
+**If you already have a GPU**, the same model runs under the official harness
+directly:
+
+```bash
+python run_all.py --shapes 1-13 --device cuda --dtype float32 --out /tmp/mine.csv
+python scripts/shape14_optimized_only.py --trunc-seq 2048
+```
+
+`run_all.py` runs each shape in a fresh subprocess and parses the harness' own
+`summary: PASS/FAIL`, `max_abs`, `max_rel` and median speedup. It is the more
+faithful check -- it is the official `main()` -- but it is not what produced the
+table below, and we would rather say so than let the two look interchangeable.
 
 ## Results
 
@@ -100,6 +132,14 @@ full S=100000: median=293376.9 ms | 10,907 tok/s | peak_vram=14.61 GB | chunk_bs
 truncated `seq_len` where the baseline *can* run (PASS, `max_abs 1.2e-6`); SDPA's
 math does not depend on `S`, so passing there evidences correctness at 1e5.
 
+**Precision, stated plainly:** the truncated correctness check is **fp32**, the
+same dtype as every graded shape. The full-length *timing* is **fp16**, and that
+is forced, not chosen: an fp32 input for this shape is
+`32 x 100000 x 1024 x 4 B = 13.1 GB`, and the output is another 13.1 GB — 26.2 GB
+of unavoidable tensors before a single activation, which no free 16 GB GPU can
+hold. In fp16 the pair is 13.1 GB total and it fits. The 293 s / 10,907 tok/s /
+14.6 GB figures above are therefore fp16 figures; the 13 graded shapes are not.
+
 Two caveats we would rather state than hide: the P100 is `sm_60`, so it gets
 neither the real FlashAttention kernel (SDPA falls back to the memory-efficient
 backend) nor `torch.compile` (Triton needs sm>=7.0). Every speedup above is
@@ -108,13 +148,19 @@ higher. See `report/figures/`.
 
 ## Ablation
 
-`baseline → +SDPA → +fp16 → +torch.compile → +chunk`, toggled via env vars
-(no code edits) — see `results/ablation.md`:
+Every stage is selected by environment variable with **no code edits**, so the
+ablation and the delivered path are literally the same code — see
+`results/ablation.md` for the measured table.
+
+Shipped defaults are `T3_AUTOCAST=off`, `T3_COMPILE=1`, i.e. **SDPA + compile**
+(compile activates only on `sm>=7.0`). Pass `--out` so a stage run does not
+overwrite the committed `results/results.csv`:
 
 ```bash
-T3_COMPILE=0                  python run_all.py --shapes 1   # SDPA only (default)
-T3_COMPILE=0 T3_AUTOCAST=fp16 python run_all.py --shapes 1   # + fp16 tensor cores
-                              python run_all.py --shapes 1   # + torch.compile (sm>=7.0)
+T3_COMPILE=0 T3_AUTOCAST=off  python run_all.py --shapes 1 --out /tmp/sdpa.csv
+T3_COMPILE=1 T3_AUTOCAST=off  python run_all.py --shapes 1 --out /tmp/compile.csv
+T3_COMPILE=0 T3_AUTOCAST=fp16 python run_all.py --shapes 1 --out /tmp/fp16.csv
+T3_COMPILE=1 T3_AUTOCAST=fp16 python run_all.py --shapes 1 --out /tmp/both.csv
 ```
 
 Environment toggles: `T3_AUTOCAST` (auto|fp16|bf16|off), `T3_COMPILE` (1|0),
@@ -123,7 +169,7 @@ Environment toggles: `T3_AUTOCAST` (auto|fp16|bf16|off), `T3_COMPILE` (1|0),
 ## Correctness notes
 
 - Every element must pass (zero failures); `NaN/Inf` is a hard fail. Measured
-  `max_abs ≈ 1e-6`, ~2000× inside `atol=0.002`.
+  worst-case `max_abs = 1.91e-6` across all 13 shapes, ~1050× inside `atol=0.002`.
 - The `max_rel` column looks large (up to ~15) and that is expected: the harness
   computes it over *every* element as `abs_err / max(|ref|, 1e-12)`, so an output
   whose reference is ~1e-7 reports a huge ratio while its absolute error is still
@@ -139,8 +185,9 @@ Environment toggles: `T3_AUTOCAST` (auto|fp16|bf16|off), `T3_COMPILE` (1|0),
 
 - fp16 tolerance is checked empirically per shape; a precision ladder
   (`T3_FP32_FFN`, fp32-SDPA) is available for any shape that fails.
-- Hand-written Triton kernels (fused LayerNorm+residual, fused bias+GELU) are an
-  optional stretch in `kernels/`; the core path relies on SDPA + `torch.compile`.
+- Hand-written Triton kernels (fused LayerNorm+residual, fused bias+GELU) were
+  scoped but **not built** — there is no `kernels/` directory. The core path is
+  SDPA + `torch.compile`, and Inductor already fuses those epilogues.
 - A hand-written Turing FlashAttention kernel is out of scope (multi-day effort).
 
 ## AI tooling

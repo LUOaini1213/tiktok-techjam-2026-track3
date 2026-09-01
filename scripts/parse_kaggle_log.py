@@ -113,7 +113,10 @@ def main():
                 mm = rx.search(blk)
                 if mm:
                     row[key] = mm.group(1)
-        if "RuntimeError" in blk and not sm:
+        # Only scrape an error out of the prose when no verdict was recovered
+        # above -- and test that, not a regex match that the summary branch
+        # never binds.
+        if not row["pass"] and "RuntimeError" in blk:
             em = re.search(r"(RuntimeError|OutOfMemoryError)[^\n]*", blk)
             row["notes"] = (em.group(0)[:80] if em else "error")
         if row["pass"] == "PASS" and row["speedup"]:

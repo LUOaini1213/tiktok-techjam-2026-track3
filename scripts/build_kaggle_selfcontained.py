@@ -5,23 +5,34 @@ Assemble a SINGLE self-contained Kaggle kernel script from:
 + user_optimized.py               (minus the from-benchmark import and __future__)
 + _kaggle_driver.py               (the sweep driver)
 
-No dataset attach needed -> robust headless run. Writes:
-  .kaggle_upload/kernel_sc/track3_sc.py
-  .kaggle_upload/kernel_sc/kernel-metadata.json
+No dataset attach needed -> robust headless run.
+
+The Kaggle kernels API picks the GPU through the ``machine_shape`` metadata
+field (equivalently ``kaggle kernels push --accelerator``). The accepted names
+are documented only in the SDK docstring for ``ApiSaveKernelRequest``:
+``NvidiaTeslaT4``, ``NvidiaTeslaP100``, ``Tpu1VmV38``. Anything else is silently
+normalised back to a generic ``"Gpu"``, which lands on a P100.
+
+Examples:
+    python scripts/build_kaggle_selfcontained.py
+    python scripts/build_kaggle_selfcontained.py --only 1-13 --accelerator NvidiaTeslaT4 \
+        --id wenjiluo/track3-t4 --out .kaggle_upload/kernel_t4
 """
 
+import argparse
 import json
 import os
 import py_compile
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUTDIR = os.path.join(HERE, ".kaggle_upload", "kernel_sc")
+DEFAULT_OUTDIR = os.path.join(HERE, ".kaggle_upload", "kernel_sc")
 
 
 BOOTSTRAP = '''# --- bootstrap: ensure a torch build compatible with the allocated GPU ---
-# Kaggle's API-allocated GPU is often a Tesla P100 (sm_60), which the preinstalled
-# torch 2.10+cu128 does NOT support (sm_70+ only). Detect an incompatible build and
-# reinstall a P100+T4-compatible torch, then re-exec so the new build is loaded.
+# Kaggle's API-allocated GPU is a Tesla P100 (sm_60) unless machine_shape asks for
+# something else, and the preinstalled torch 2.10+cu128 does NOT support sm_60
+# (sm_70+ only). Detect an incompatible build, reinstall a P100+T4-compatible
+# torch, then re-exec so the new build is loaded. On a T4 (sm_75) this is a no-op.
 import os as _os, sys as _sys, subprocess as _sp
 # Expandable segments keep the allocator from fragmenting when the seq_len=1e5
 # shape holds two ~6.5 GB tensors (input + output) plus per-chunk activations.
@@ -53,15 +64,41 @@ def read(p):
         return f.read()
 
 
+def build_selector(only, extra_env):
+    """Kaggle kernels take no environment, so bake the knobs into the script."""
+    lines = ["import os as _os2", '_os2.environ["T3_ONLY"] = "%s"' % only]
+    for kv in extra_env:
+        key, _, val = kv.partition("=")
+        lines.append('_os2.environ["%s"] = "%s"' % (key.strip(), val.strip()))
+    return "\n".join(lines) + "\n"
+
+
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--only", default="all",
+                    choices=["all", "1-13", "14", "ablation"],
+                    help="which section of the sweep the kernel runs (default: all)")
+    ap.add_argument("--id", default="wenjiluo/track3-bench",
+                    help="Kaggle kernel id to push to")
+    ap.add_argument("--accelerator", default=None,
+                    choices=["NvidiaTeslaT4", "NvidiaTeslaP100", "Tpu1VmV38"],
+                    help="machine_shape baked into kernel-metadata.json")
+    ap.add_argument("--out", default=None, help="output folder")
+    ap.add_argument("--env", action="append", default=[], metavar="K=V",
+                    help="extra environment variable baked into the kernel "
+                         "(repeatable), e.g. --env T3_COMPILE=0")
+    args = ap.parse_args()
+
     bench = read("torch_transformer_benchmark.py")
     marker = 'if __name__ == "__main__":'
     assert marker in bench
     bench = bench[: bench.index(marker)].rstrip() + "\n"
-    # Inject the GPU-compat bootstrap right after the mandatory __future__ import.
+    # Inject the GPU-compat bootstrap and the run selector right after the
+    # mandatory __future__ import.
     fut = "from __future__ import annotations\n"
     assert fut in bench
-    bench = bench.replace(fut, fut + "\n" + BOOTSTRAP, 1)
+    prologue = fut + "\n" + BOOTSTRAP + "\n" + build_selector(args.only, args.env)
+    bench = bench.replace(fut, prologue, 1)
 
     uo = read("user_optimized.py")
     uo = uo.replace("from __future__ import annotations\n", "")
@@ -77,14 +114,17 @@ def main():
         + driver
     )
 
-    os.makedirs(OUTDIR, exist_ok=True)
-    out_py = os.path.join(OUTDIR, "track3_sc.py")
+    outdir = args.out or DEFAULT_OUTDIR
+    if not os.path.isabs(outdir):
+        outdir = os.path.join(HERE, outdir)
+    os.makedirs(outdir, exist_ok=True)
+    out_py = os.path.join(outdir, "track3_sc.py")
     with open(out_py, "w", encoding="utf-8") as f:
         f.write(combined)
 
     meta = {
-        "id": "wenjiluo/track3-bench",
-        "title": "track3-bench",
+        "id": args.id,
+        "title": args.id.split("/")[-1],
         "code_file": "track3_sc.py",
         "language": "python",
         "kernel_type": "script",
@@ -97,11 +137,14 @@ def main():
         "kernel_sources": [],
         "model_sources": [],
     }
-    with open(os.path.join(OUTDIR, "kernel-metadata.json"), "w", encoding="utf-8") as f:
+    if args.accelerator:
+        meta["machine_shape"] = args.accelerator
+    with open(os.path.join(outdir, "kernel-metadata.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
     py_compile.compile(out_py, doraise=True)
     print(f"wrote {out_py} ({len(combined)} chars, {combined.count(chr(10))+1} lines)")
+    print(f"  only={args.only} id={args.id} accelerator={args.accelerator} env={args.env}")
     print("py_compile: OK")
 
 

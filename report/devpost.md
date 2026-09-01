@@ -61,8 +61,9 @@ levers:
 
 ## Accomplishments we're proud of
 Reframing shape 14 as "impossible → possible," and a single drop-in class that
-stays within a 2% tolerance while getting large speedups purely from
-memory-efficient attention + tensor cores + compilation.
+holds the official per-element gate -- `abs<=0.002` OR `rel<=0.02`, zero failing
+elements, worst observed `max_abs` 1.9e-6 -- while getting large speedups from
+memory-efficient attention.
 
 ## What we learned
 Where the real bottlenecks are per shape (launch overhead vs throughput vs the

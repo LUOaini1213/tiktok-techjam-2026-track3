@@ -41,6 +41,11 @@ separating from the speedup table.
 | SDPA + chunks collected into a list + `torch.cat` | **OOM** at the concat: `Tried to allocate 6.10 GiB` |
 | SDPA + chunks written into a preallocated output | **runs**: 293377 ms, 10,907 tok/s, peak 14.61 GB, `chunk_bs=1` |
 
+All three rows are **fp16** — an fp32 input plus output for this shape is 26.2 GB,
+which does not fit a free 16 GB GPU at all, so fp16 is the only regime in which
+the comparison exists. The truncated correctness check that backs this shape is
+fp32, like every graded shape.
+
 The concat was the whole difference. Collecting 32 chunks and joining them holds
 the pieces and the `[32,100000,1024]` result at the same time — a second ~6.5 GB
 allocation on a card that already had the 6.5 GB input resident.

@@ -5,7 +5,7 @@
 > A walkthrough (no fancy UI) is explicitly accepted for backend tracks.
 
 **0:00–0:20 — Hook / problem.**
-"Track 3: make a Transformer layer faster on the GPU, but bit-for-bit correct.
+"Track 3: make a Transformer layer faster on the GPU, without moving the answer.
 Here's the reference — standard multi-head attention plus FFN — and the 14 test
 shapes it's graded on." (Show `torch_transformer_benchmark.py` baseline + the
 shapes appendix.)

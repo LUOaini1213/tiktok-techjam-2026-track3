@@ -24,7 +24,7 @@ atol=0.002 OR rtol=0.02, checked per-element):
      in 16 GB.
 
 Ablation / robustness toggles via environment variables (see README):
-  T3_AUTOCAST   = auto | fp16 | bf16 | off      (default auto)
+  T3_AUTOCAST   = auto | fp16 | bf16 | off      (default off; see _plan)
   T3_COMPILE    = 1 | 0                          (default 1)
   T3_COMPILE_MODE = default | reduce-overhead | max-autotune  (override)
   T3_FP32_FFN   = 1 | 0                          (default 0; force FFN+LN fp32)
