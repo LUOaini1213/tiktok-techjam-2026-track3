@@ -257,6 +257,44 @@ def _triton_bench(device):
         torch.cuda.empty_cache()
 
 
+
+def _sdpa_probe(device):
+    """Which scaled_dot_product_attention backend can actually run here.
+
+    Tried per (dtype, head_dim) pair the sweep uses, by forcing each backend
+    alone and seeing whether the call succeeds. PyTorch's flash backend is
+    fp16/bf16-only and, in current releases, sm_80+; the graded path is fp32.
+    So this settles, with a measurement rather than a belief, whether any run
+    in this project ever used FlashAttention.
+    """
+    import torch
+    import torch.nn.functional as F
+    try:
+        from torch.nn.attention import SDPBackend, sdpa_kernel
+    except Exception as e:
+        print("sdpa probe unavailable:", e, flush=True)
+        return
+    backends = (("flash", SDPBackend.FLASH_ATTENTION),
+                ("efficient", SDPBackend.EFFICIENT_ATTENTION),
+                ("math", SDPBackend.MATH))
+    print("sdpa backend probe  (head_dim -> which backends can run, is_causal=True)", flush=True)
+    for dtype in (torch.float32, torch.float16):
+        for hd in (8, 32, 64, 128, 256):
+            q = torch.randn(2, 4, 128, hd, device=device, dtype=dtype)
+            res = []
+            for name, be in backends:
+                try:
+                    with sdpa_kernel(be):
+                        F.scaled_dot_product_attention(q, q, q, is_causal=True)
+                    res.append(f"{name}=yes")
+                except Exception:
+                    res.append(f"{name}=no ")
+            print(f"  PROBE {str(dtype).split('.')[-1]:8s} hd={hd:4d}  " + "  ".join(res), flush=True)
+    print("  shapes -> head_dim: D=128,H=4 -> 32 | D=32,H=4 -> 8 | D=1024,H=4 -> 256 | "
+          "D=128,H=1 -> 128 | D=128,H=2 -> 64 | D=128,H=16 -> 8 | shape14 D=1024,H=16 -> 64",
+          flush=True)
+
+
 def _main():
     import os
     import torch
@@ -269,6 +307,12 @@ def _main():
           f"cuda {torch.version.cuda} | cc {torch.cuda.get_device_capability(device)}", flush=True)
 
     only = os.environ.get("T3_ONLY", "all").strip().lower()
+    try:
+        _sdpa_probe(device)
+    except Exception as e:
+        print("sdpa probe error:", str(e)[:120], flush=True)
+    if only == "probe":
+        return
     if only == "triton":
         SH_FILTER = []
 

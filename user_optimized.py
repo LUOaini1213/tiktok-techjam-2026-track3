@@ -30,6 +30,7 @@ Ablation / robustness toggles via environment variables (see README):
   T3_COMPILE_MODE = default | reduce-overhead | max-autotune  (override)
   T3_FP32_FFN   = 1 | 0                          (default 0; force FFN+LN fp32)
   T3_CHUNK_BS   = <int>                          (override batch chunk size)
+  T3_FUSED_QKV  = 1 | 0                          (default 0; one [3D,D] GEMM for q,k,v)
   T3_TRITON     = 1 | 0                          (default 0; hand-written fused
                                                   add+LayerNorm as a registered op,
                                                   composes with torch.compile)
@@ -89,6 +90,12 @@ class UserOptimizedTransformer(BaselineTransformer):
         self._tune_result = None     # (eager_ms, compiled_ms) when it ran
         self._can_compile = False  # set in _plan: Triton needs CUDA capability >= 7.0
         self._fp32_ffn = _env_flag("T3_FP32_FFN", False)
+        # One [3D, D] GEMM for q, k and v instead of three [D, D] ones: fewer
+        # launches, and the activation is read once rather than three times.
+        # The concatenated weight is cached as a plain tensor attribute on the
+        # attention module -- not a Parameter, not a registered buffer -- so
+        # state_dict and the harness' strict weight copy never see it.
+        self._fused_qkv = _env_flag("T3_FUSED_QKV", False)
         # Hand-written Triton fused add+LayerNorm, off by default. When the
         # kernel is registered as a torch.library op (torch >= 2.6) Inductor can
         # schedule it inside the compiled graph, so compile stays on and the two
@@ -189,13 +196,41 @@ class UserOptimizedTransformer(BaselineTransformer):
         elem_bytes = 2 if self._autocast_dtype is not None else x.element_size()
         return max(1, int(usable / (elem_bytes * _LIVE_INTERMEDIATES)))
 
+    def _refresh_fused_qkv(self) -> None:
+        """(Re)build each layer's concatenated QKV weight if its parts changed.
+
+        Keyed on the parameters' in-place version counters plus device and
+        dtype, so a weight copy or a .to() after the first forward rebuilds it
+        and a steady-state forward pays only a few integer compares.
+        """
+        for layer in self.layers:
+            attn = layer.attention
+            parts = (attn.q_proj, attn.k_proj, attn.v_proj)
+            key = tuple(m.weight._version for m in parts) + tuple(
+                (m.bias._version if m.bias is not None else -1) for m in parts
+            ) + (str(attn.q_proj.weight.device), str(attn.q_proj.weight.dtype))
+            if getattr(attn, "_qkv_key", None) == key:
+                continue
+            with torch.no_grad():
+                attn._qkv_w = torch.cat([m.weight for m in parts], dim=0)
+                attn._qkv_b = (None if attn.q_proj.bias is None
+                               else torch.cat([m.bias for m in parts], dim=0))
+            attn._qkv_key = key
+
     # ---- compute ------------------------------------------------------------
     def _attention(self, attn, x, mask, causal, all_valid):
         b, s, d = x.shape
         h, hd = attn.num_heads, attn.head_dim
-        q = attn.q_proj(x).view(b, s, h, hd).transpose(1, 2)
-        k = attn.k_proj(x).view(b, s, h, hd).transpose(1, 2)
-        v = attn.v_proj(x).view(b, s, h, hd).transpose(1, 2)
+        if self._fused_qkv and getattr(attn, "_qkv_w", None) is not None:
+            qkv = F.linear(x, attn._qkv_w, attn._qkv_b)
+            q, k, v = qkv.split(d, dim=-1)
+            q = q.reshape(b, s, h, hd).transpose(1, 2)
+            k = k.reshape(b, s, h, hd).transpose(1, 2)
+            v = v.reshape(b, s, h, hd).transpose(1, 2)
+        else:
+            q = attn.q_proj(x).view(b, s, h, hd).transpose(1, 2)
+            k = attn.k_proj(x).view(b, s, h, hd).transpose(1, 2)
+            v = attn.v_proj(x).view(b, s, h, hd).transpose(1, 2)
 
         if all_valid:
             # Graded hot path: no padding. A dense [S,S] mask is impossible for
@@ -259,6 +294,8 @@ class UserOptimizedTransformer(BaselineTransformer):
     # ---- entry point --------------------------------------------------------
     def forward(self, x: torch.Tensor, valid_token_mask: Optional[torch.Tensor] = None):
         self._plan(x)
+        if self._fused_qkv:
+            self._refresh_fused_qkv()
         causal = self.config.causal
         # Device->host sync kept OUTSIDE any compiled region / CUDA graph.
         all_valid = valid_token_mask is None or bool(valid_token_mask.all())

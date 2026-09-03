@@ -76,7 +76,7 @@ def build_selector(only, extra_env):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", default="all",
-                    choices=["all", "1-13", "14", "ablation", "triton"],
+                    choices=["all", "1-13", "14", "ablation", "triton", "probe"],
                     help="which section of the sweep the kernel runs (default: all)")
     ap.add_argument("--id", default="wenjiluo/track3-bench",
                     help="Kaggle kernel id to push to")
