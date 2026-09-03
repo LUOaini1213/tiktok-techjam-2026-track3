@@ -445,6 +445,9 @@
         <tr><td>T4 + fp16 <span class="mono">(opt-in)</span></td>
             <td class="n mono">4.014&times;</td><td class="n mono">1.320&ndash;11.528&times;</td>
             <td class="n mono">2.04e-3</td><td class="n mono bad">0.98&times;</td></tr>
+        <tr><td>T4, fp16 attention + fp32 FFN/LN <span class="mono">(opt-in)</span></td>
+            <td class="n mono">2.953&times;</td><td class="n mono">1.467&ndash;9.609&times;</td>
+            <td class="n mono">1.72e-03</td><td class="n mono bad">1.17&times;</td></tr>
       </tbody>
     </table>
   </div>
@@ -508,7 +511,10 @@
     fails &mdash; and one failing element fails the shape and forfeits the speed score entirely.
     The trade is roughly twice the speed for a correctness margin of essentially zero on a hard
     gate. We took the 2.28&times; that sits 1049&times; inside tolerance and left fp16 as a
-    documented, measured flag.</p>
+    documented, measured flag. The apparent middle ground &mdash; fp16 attention with fp32 FFN and
+    LayerNorm &mdash; was measured too: 2.953&times; at a worst error of 1.72e-03, a margin of
+    1.17&times;. Moving everything after the attention to fp32 recovered almost nothing,
+    which puts the error floor inside the fp16 attention matmuls themselves.</p>
   </div>
 
   <div class="callout warn">

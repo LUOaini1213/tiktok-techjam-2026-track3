@@ -230,7 +230,7 @@ over near-zero references — and why a `max_abs` of $2.04\times10^{-3}$ is disq
 
 A kernel that fuses *more* than Inductor is willing to — the add, the LayerNorm, *and* the following projection's input cast in one pass — since matching the compiler's own fusion of two ops turned out not to be enough to beat it. The fused bias+GELU epilogue was scoped and dropped, since Inductor already fuses it; a Turing-specific FlashAttention kernel is a multi-day effort we scoped and did not attempt. The padded fallback still materializes a dense $[B,1,S,S]$ bias, giving back exactly the $O(S^2)$ memory SDPA exists to avoid; the graded path never takes it, but making it memory-efficient is unfinished work rather than a solved problem.
 
-And the experiment we ran out of time for: a mixed assignment — fp16 matmuls with selected fp32 reductions — that keeps most of the $2\times$ while restoring a real margin. Somewhere between $0.98\times$ and $1049\times$ there is a configuration worth shipping.
+The mixed assignment — fp16 attention, fp32 FFN and LayerNorm — turned out to be measurable in time, and it is not the middle ground it looks like: $2.953\times$ at a worst error of $1.72e-03$, a margin of $1.17\times$. Moving everything *after* the attention to fp32 recovered almost nothing, which locates the error floor inside the fp16 attention matmuls themselves. A real middle ground needs fp16 storage with fp32 accumulation *inside* the attention kernel, which the SDPA fp16 path does not expose — that is the kernel we would write next.
 
 ---8<--- 复制到这里为止 ---8<---
 

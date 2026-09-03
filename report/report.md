@@ -66,6 +66,7 @@ reproduction of the fp32 reference, ~1049× inside the `atol=0.002` gate.
 | P100, SDPA only | 2.065× | 1.098-4.001× | 1.91e-6 | 1049× |
 | **T4, SDPA + autotuned compile (shipped)** | **2.280×** | 1.090-4.541× | 1.91e-6 | 1049× |
 | T4, + fp16 (`T3_AUTOCAST=fp16`) | 4.014× | 1.320-11.528× | 2.04e-3 | **0.98×** |
+| T4, fp16 attention + fp32 FFN/LN (`T3_FP32_FFN=1`) | 2.953× | 1.467-9.609× | 1.72e-03 | 1.17× |
 
 | # | shape [B,D,H,S] | P100 | T4 | | # | shape [B,D,H,S] | P100 | T4 |
 |---|---|---|---|---|---|---|---|---|
@@ -134,6 +135,9 @@ Figures: `figures/memory_wall.png` (the 20.5 TB wall), `figures/speedups.png`
 
 - fp16 is measured, not assumed: 13/13 PASS at 4.014x median, with `max_abs`
   2.04e-3 against a 2e-3 gate. Shipped off; see the ablation for the reasoning.
+  So is the mixed assignment (fp16 attention, fp32 FFN and LayerNorm): 2.953x at
+  `max_abs` 1.72e-03, margin 1.17x. The error floor sits in the fp16 attention
+  matmuls, so there is no cheap middle ground on this axis.
 - `--dtype bfloat16` fails the accuracy gate. This is a property of the
   configuration rather than of our kernel: the reference compared against itself
   recomputed in fp32 fails identically (7603 vs our 6131 elements, same

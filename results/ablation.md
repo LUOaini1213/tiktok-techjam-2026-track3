@@ -60,6 +60,7 @@ Here is why we still do not ship it:
 |---|---|---|---|---|
 | fp32 (shipped) | 13/13 | 2.280x | 1.91e-6 | **1049x** |
 | fp16 (`T3_AUTOCAST=fp16`) | 13/13 | 4.014x | **2.04e-3** | **0.98x** |
+| fp16 attention + fp32 FFN/LN (`T3_AUTOCAST=fp16 T3_FP32_FFN=1`) | 13/13 | 2.953x | 1.72e-03 | 1.17x |
 
 The fp16 worst case, shape 6, is `max_abs = 0.0020388` — it has **already
 crossed `atol=0.002`**. It passes only because the harness gate is
@@ -74,6 +75,13 @@ So the trade is: **2x more speed, in exchange for a correctness margin of
 essentially zero on a hard gate.** We take the 2.280x that sits 1049x inside
 tolerance. The flag is there, documented and measured, for anyone who wants the
 other side of that trade.
+
+**The middle ground was measured and is not one.** fp16 attention with fp32 FFN
+and LayerNorm (`T3_FP32_FFN=1`) scores 2.953x, but its worst `max_abs` is 1.72e-03
+— a margin of 1.17x, with every shape between 8.48e-04 and 1.72e-03. Taking
+the FFN and norms back to fp32 only moved the worst case 2.04e-3 → 1.72e-03: the
+error floor is in the fp16 attention matmuls, and nothing downstream of them
+can buy it back (`results_t4_mixed.csv`, `kaggle_t4_mixed_run.log`).
 
 ## The chunking stage (shape 14)
 

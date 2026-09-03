@@ -144,6 +144,16 @@ speed score entirely. The shipped fp32 path sits **1049x inside** the same gate.
 We took the margin. The flag is documented, measured, and yours if you want the
 other side of the trade — full numbers in [`results/ablation.md`](results/ablation.md).
 
+**And the obvious middle ground does not exist.** The natural next question is a
+mixed assignment — fp16 where the tensor cores pay, fp32 where the error accumulates.
+`T3_AUTOCAST=fp16 T3_FP32_FFN=1` is exactly that (fp16 attention projections and
+SDPA, fp32 FFN and LayerNorm), and measured it lands at **2.953x median with a
+worst `max_abs` of 1.72e-03** — a margin of **1.17x**, every shape between
+8.48e-04 and 1.72e-03. Moving the FFN and the norms to fp32 bought 2.04e-3 → 1.72e-03,
+which says the error floor lives in the fp16 attention matmuls themselves, not in
+what follows them. Three regimes measured; only fp32 has a margin worth the word
+(`results/results_t4_mixed.csv`, `results/kaggle_t4_mixed_run.log`).
+
 ### Shape 14: the one the baseline cannot run
 
 Its score matrix is `[32, 16, 100000, 100000]` = 5.12e12 elements = **~20.5 TB**
@@ -297,9 +307,11 @@ path is the one that is faster.
 - fp16 is measured across all 13 shapes, not assumed: it passes, at 4.01x
   median, with `max_abs` 2.04e-3 against a 2e-3 gate. A precision ladder
   (`T3_FP32_FFN`, fp32 SDPA) exists for anyone who enables it and needs to claw
-  margin back on a specific shape. What we have *not* done is find a mixed
-  assignment -- fp16 matmuls with selected fp32 stages -- that keeps most of the
-  2x while restoring real margin. That is the obvious next experiment.
+  margin back on a specific shape. The mixed assignment (fp16 attention, fp32 FFN and LayerNorm) is measured too:
+  2.953x at `max_abs` 1.72e-03, margin 1.17x — the error floor is in the
+  attention matmuls, so there is no cheap middle ground on this axis. A real one
+  would need fp16 storage with fp32 accumulation *inside* the attention kernel,
+  which SDPA's fp16 path does not expose.
 - The stage ablation covers 4 representative shapes on one GPU, one run each;
   the 13-shape sweeps are the ones with repeat trials behind them.
 - The fused bias+GELU epilogue kernel was scoped and not built; Inductor
