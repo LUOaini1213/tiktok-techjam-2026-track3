@@ -338,9 +338,12 @@ def _main():
             ok, mabs, mrel = _accuracy(baseline, optimized, cfg, device, dtype)
             tr = getattr(optimized, "_tune_result", None)
             if tr is not None:
-                print(f"autotune: eager={tr[0]:.4f}ms compiled={tr[1]:.4f}ms -> "
-                      f"{'eager' if optimized._compiled is None else 'compiled'}",
-                      flush=True)
+                names = ("eager", "compiled", "graph")
+                parts = " ".join(f"{n}={v:.4f}ms" for n, v in zip(names, tr)
+                                 if v != float("inf"))
+                chosen = ("graph" if getattr(optimized, "_graph", None) is not None
+                          else "compiled" if optimized._compiled is not None else "eager")
+                print(f"autotune: {parts} -> {chosen}", flush=True)
             if ok:
                 xt, mt = generate_random_case(cfg, device, dtype, 101234, 0.0, 1.0)
                 bms = _bench(baseline, xt, mt); oms = _bench(optimized, xt, mt)

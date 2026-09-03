@@ -27,6 +27,8 @@ Ablation / robustness toggles via environment variables (see README):
   T3_AUTOCAST   = auto | fp16 | bf16 | off      (default off; see _plan)
   T3_COMPILE    = auto | 1 | 0                   (default auto: time eager vs compiled
                                                   once, on the real input, keep the winner)
+  T3_CUDAGRAPH  = 1 | 0                          (default 0; capture the eager path into a
+                                                  CUDA graph as a third autotune candidate)
   T3_COMPILE_MODE = default | reduce-overhead | max-autotune  (override)
   T3_FP32_FFN   = 1 | 0                          (default 0; force FFN+LN fp32)
   T3_CHUNK_BS   = <int>                          (override batch chunk size)
@@ -87,7 +89,16 @@ class UserOptimizedTransformer(BaselineTransformer):
                                 else "off")
         self._compile_ok = self._compile_policy != "off"
         self._tuned = False          # T3_COMPILE=auto: decided once, first forward
-        self._tune_result = None     # (eager_ms, compiled_ms) when it ran
+        self._tune_result = None     # (eager_ms, compiled_ms[, graph_ms]) when it ran
+        # Manual CUDA-graph capture of the *eager* path. For launch-bound shapes
+        # the remaining cost is CPU launch overhead; a captured graph replays the
+        # same kernels with none of it, and without the Inductor guard/dispatch
+        # cost that made reduce-overhead lose on those shapes. It enters the
+        # first-forward autotune as a third candidate and is kept only if it wins.
+        self._cudagraph = _env_flag("T3_CUDAGRAPH", False)
+        self._graph = None
+        self._g_x = self._g_m = self._g_out = None
+        self._g_key = None
         self._can_compile = False  # set in _plan: Triton needs CUDA capability >= 7.0
         self._fp32_ffn = _env_flag("T3_FP32_FFN", False)
         # One [3D, D] GEMM for q, k and v instead of three [D, D] ones: fewer
@@ -331,9 +342,9 @@ class UserOptimizedTransformer(BaselineTransformer):
         # microseconds. Rather than guess a threshold, time both on the actual
         # input once and keep the winner. It runs inside the harness' warmup,
         # so the cost is invisible to the graded timing.
-        if (self._compile_policy == "auto" and not self._tuned
-                and self._compiled is not None and x.device.type == "cuda"
-                and b * x.shape[1] <= 16384):
+        if (not self._tuned and x.device.type == "cuda" and b * x.shape[1] <= 16384
+                and (self._compile_policy == "auto" or self._cudagraph)
+                and (self._compiled is not None or self._cudagraph)):
             self._tuned = True
             self._pick_faster(x, valid_token_mask, all_valid, _invoke)
 
@@ -357,46 +368,99 @@ class UserOptimizedTransformer(BaselineTransformer):
         if self._chunk_bs is not None and self._chunk_bs < b:  # extreme shape only
             return self._forward_chunked(x, valid_token_mask, core, b)
 
+        if (self._graph is not None and all_valid
+                and self._g_key == (tuple(x.shape), x.dtype, str(x.device))):
+            return self._replay(x, valid_token_mask).to(x.dtype)
+
         out = core(x, valid_token_mask, all_valid).to(x.dtype)
         if self._graph_output and out.data_ptr() != x.data_ptr():
             out = out.clone()
         return out
 
     def _pick_faster(self, x, mask, all_valid, invoke, warm=6, iters=7):
-        """Keep whichever of eager / compiled is faster on this exact input.
+        """Keep the fastest of eager / compiled / captured-eager on this input.
 
-        Six untimed calls first: the compiled path needs them for Dynamo to
-        trace and, under reduce-overhead, for the CUDA graph to be captured.
-        Then a median of seven timed calls each. Any failure leaves the
-        compiled path in place -- this only ever removes it.
+        Six untimed calls per candidate first (Dynamo tracing, and the CUDA
+        graph that reduce-overhead records), then a median of seven timed
+        calls. Any failure leaves the compiled path as it was. A captured
+        graph of the eager path is kept only when it wins outright.
         """
-        def median_ms(fn):
+        def median_ms(call):
             with torch.no_grad():
                 for _ in range(warm):
-                    invoke(fn, x, mask, all_valid)
+                    call()
                 torch.cuda.synchronize(x.device)
                 start = torch.cuda.Event(enable_timing=True)
                 end = torch.cuda.Event(enable_timing=True)
                 times = []
                 for _ in range(iters):
                     start.record()
-                    invoke(fn, x, mask, all_valid)
+                    call()
                     end.record()
                     torch.cuda.synchronize(x.device)
                     times.append(start.elapsed_time(end))
             times.sort()
             return times[len(times) // 2]
 
+        inf = float("inf")
         try:
-            compiled_ms = median_ms(self._compiled)
-            eager_ms = median_ms(self._run_full)
+            eager_ms = median_ms(lambda: invoke(self._run_full, x, mask, all_valid))
+            compiled_ms = (median_ms(lambda: invoke(self._compiled, x, mask, all_valid))
+                           if self._compiled is not None else inf)
+            graph_ms = inf
+            if self._cudagraph and all_valid and self._capture_graph(x, mask, invoke):
+                graph_ms = median_ms(lambda: self._replay(x, mask))
         except Exception:
+            self._graph = None
             return
-        self._tune_result = (eager_ms, compiled_ms)
-        if eager_ms < compiled_ms:
+        self._tune_result = (eager_ms, compiled_ms, graph_ms)
+        best = min(eager_ms, compiled_ms, graph_ms)
+        if best == graph_ms and self._graph is not None:
             self._compiled = None
             self._compile_ok = False
             self._graph_output = False
+        else:
+            self._graph = None
+            if eager_ms < compiled_ms:
+                self._compiled = None
+                self._compile_ok = False
+                self._graph_output = False
+
+    def _capture_graph(self, x, mask, invoke):
+        """Record the eager forward into a CUDA graph over static input copies.
+
+        Only for the no-padding hot path: with all_valid the mask is never
+        read, so the recorded control flow is exact for every later input of
+        the same shape. Returns False, leaving no state behind, on any failure.
+        """
+        try:
+            self._g_x = x.detach().clone()
+            self._g_m = None if mask is None else mask.detach().clone()
+            side = torch.cuda.Stream(x.device)
+            side.wait_stream(torch.cuda.current_stream(x.device))
+            with torch.cuda.stream(side), torch.no_grad():
+                for _ in range(3):  # capture wants a warmed-up allocator
+                    invoke(self._run_full, self._g_x, self._g_m, True)
+            torch.cuda.current_stream(x.device).wait_stream(side)
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph), torch.no_grad():
+                self._g_out = invoke(self._run_full, self._g_x, self._g_m, True)
+            self._graph = graph
+            self._g_key = (tuple(x.shape), x.dtype, str(x.device))
+            return True
+        except Exception:
+            self._graph = None
+            self._g_x = self._g_m = self._g_out = None
+            return False
+
+    def _replay(self, x, mask):
+        self._g_x.copy_(x)
+        if self._g_m is not None and mask is not None:
+            self._g_m.copy_(mask)
+        self._graph.replay()
+        # The next replay rewrites the output buffer; hand back a tensor the
+        # caller owns.
+        return self._g_out.clone()
 
     def _forward_chunked(self, x, valid_token_mask, core, b):
         """Batch-chunked forward for the shape whose activations exceed VRAM.
