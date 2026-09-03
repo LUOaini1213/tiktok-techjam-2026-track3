@@ -1,9 +1,10 @@
 # 3-minute demo video script — Track 3
 
-> **Correction after upload.** The narration in the uploaded cut says "FlashAttention". A backend
-> probe later showed neither GPU could run PyTorch's flash kernel (fp16-only, sm_80+); every run
-> used SDPA's memory-efficient backend. Same O(S) memory, wrong name. The script below is corrected;
-> the video was not re-cut.
+> **Note.** An earlier draft of this storyboard called the attention kernel "FlashAttention". A
+> backend probe later showed neither GPU could run PyTorch's flash kernel (fp16-only, sm_80+);
+> every run used SDPA's memory-efficient backend. The line below is corrected. The uploaded
+> video is unaffected: its narration (`build/track3_demo.srt`, generated from
+> `scripts/make_video.py`) says "fused attention" and never used the word.
 
 
 > **The delivered video is generated, not hand-edited.** `scripts/make_video.py`
