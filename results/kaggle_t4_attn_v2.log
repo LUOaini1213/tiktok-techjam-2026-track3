@@ -1,0 +1,27 @@
+=== ENV ===
+gpu Tesla T4 | torch 2.10.0+cu128 | cuda 12.8 | cc (7, 5)
+sdpa backend probe  (head_dim -> which backends can run, is_causal=True)
+  PROBE float32  hd=   8  flash=no   efficient=yes  math=yes
+  PROBE float32  hd=  32  flash=no   efficient=yes  math=yes
+  PROBE float32  hd=  64  flash=no   efficient=yes  math=yes
+  PROBE float32  hd= 128  flash=no   efficient=yes  math=yes
+  PROBE float32  hd= 256  flash=no   efficient=yes  math=yes
+  PROBE float16  hd=   8  flash=no   efficient=yes  math=yes
+  PROBE float16  hd=  32  flash=no   efficient=yes  math=yes
+  PROBE float16  hd=  64  flash=no   efficient=yes  math=yes
+  PROBE float16  hd= 128  flash=no   efficient=yes  math=yes
+  PROBE float16  hd= 256  flash=no   efficient=yes  math=yes
+  shapes -> head_dim: D=128,H=4 -> 32 | D=32,H=4 -> 8 | D=1024,H=4 -> 256 | D=128,H=1 -> 128 | D=128,H=2 -> 64 | D=128,H=16 -> 8 | shape14 D=1024,H=16 -> 64
+
+##### ATTENTION KERNEL BENCH #####
+HAVE_TRITON=True HAVE_ATTN_OP=True
+ATTN: case | BxHxSxhd | sdpa32 ms | sdpa16 ms | k1 ms | k3 ms | err sdpa32 | err sdpa16 | err k1 | err k3 | k1 vs sdpa32 | k3 vs sdpa32
+ATTN,shape 1/5 B=64 H=4 S=128 hd=32,64x4x128x32,0.5386,0.1609,0.8192,2.5903,9.49e-07,0.00177,0.00129,2.25e-06,0.657,0.208
+ATTN,shape 7 hd=8,64x4x128x8,0.4405,0.1574,0.5652,1.2533,6.88e-07,0.00187,0.00191,1.44e-06,0.779,0.351
+ATTN,shape 9 H=1 hd=128,64x1x128x128,0.3529,0.1249,0.9974,8.5802,1.27e-06,0.00198,0.00137,3.55e-06,0.354,0.041
+ATTN,shape 10 H=2 hd=64,64x2x128x64,0.3728,0.1179,1.0930,9.0007,1.23e-06,0.00187,0.00171,2.29e-06,0.341,0.041
+ATTN,shape 11 H=16 hd=8,64x16x128x8,1.5537,0.5120,1.6773,2.1651,8.52e-07,0.00221,0.00235,1.56e-06,0.926,0.718
+ATTN,shape 12 S=32,64x4x32x32,0.1912,0.0761,0.4076,0.7189,1.15e-06,0.00188,0.00172,1.62e-06,0.469,0.266
+ATTN,shape 13 S=1024,64x4x1024x32,9.1914,2.2681,12.6492,43.5370,8.8e-07,0.00177,0.00129,2.17e-06,0.727,0.211
+ATTN,shape 6 B=10000,10000x4x128x32,37.0816,11.2498,62.6176,214.2161,0,0.00278,0.00235,4.17e-06,0.592,0.173
+compile compose: OK  max_abs=0.00208

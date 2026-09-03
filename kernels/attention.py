@@ -259,18 +259,29 @@ def attention_raw(q, k, v, scale=None, causal=True, split=3):
 HAVE_ATTN_OP = False
 if HAVE_TRITON:
     try:
-        from torch.library import triton_op, wrap_triton
+        # An *opaque* custom op -- deliberately not triton_op. Inductor traces a
+        # triton_op's body, and by default does not emulate intermediate
+        # precision casts inside the pointwise kernels it fuses: the
+        # (x - x.half().float()) that produces each lo half then folds to zero,
+        # and SPLIT=3 silently degrades to SPLIT=1. Measured: 2.08e-3 under
+        # compile against 2.3e-6 eager, from the same code. A custom_op body
+        # runs exactly as written, so the split survives compilation.
+        from torch.library import custom_op
 
-        @triton_op("exactswap::attention", mutates_args={})
+        @custom_op("exactswap::attention", mutates_args=())
         def _attention_op(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                           scale: float, causal: bool, split: int) -> torch.Tensor:
             ops, split = _operands(q, k, v, scale, split)
             o = torch.empty(q.shape, dtype=q.dtype, device=q.device)
-            _launch(wrap_triton(_attn_fwd), ops, o, causal, split)
+            _launch(_attn_fwd, ops, o, causal, split)
             return o
 
+        @_attention_op.register_fake
+        def _attention_fake(q, k, v, scale, causal, split):
+            return torch.empty(q.shape, dtype=q.dtype, device=q.device)
+
         HAVE_ATTN_OP = True
-    except Exception:  # pragma: no cover - torch < 2.6
+    except Exception:  # pragma: no cover - torch < 2.4
         HAVE_ATTN_OP = False
 
 
