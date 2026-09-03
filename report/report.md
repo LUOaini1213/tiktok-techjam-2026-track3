@@ -65,7 +65,7 @@ reproduction of the fp32 reference, ~1049× inside the `atol=0.002` gate.
 | regime | median | range | worst `max_abs` | margin vs `atol` |
 |---|---|---|---|---|
 | P100, SDPA only | 2.065× | 1.098-4.001× | 1.91e-6 | 1049× |
-| **T4, SDPA + first-forward autotune (shipped)** | **2.286×** | 1.094-4.436× | 1.91e-6 | 1049× |
+| **T4, SDPA + first-forward autotune (shipped)** | **2.286×** | 1.088-4.436× | 1.91e-6 | 1049× |
 | T4, + fp16 (`T3_AUTOCAST=fp16`) | 4.014× | 1.320-11.528× | 2.04e-3 | **0.98×** |
 | T4, fp16 attention + fp32 FFN/LN (`T3_FP32_FFN=1`) | 2.953× | 1.467-9.609× | 1.72e-03 | 1.17× |
 
@@ -73,16 +73,24 @@ reproduction of the fp32 reference, ~1049× inside the `atol=0.002` gate.
 |---|---|---|---|---|---|---|---|---|
 | 1 | 64,128,4,128 | 1.76× | 2.26× | | 8 | 64,1024,4,128 | 1.10× | 1.09× |
 | 2 | 1,128,4,128 | 2.14× | 4.05× | | 9 | 64,128,1,128 | 1.24× | 1.28× |
-| 3 | 4,128,4,128 | 2.17× | 3.52× | | 10 | 64,128,2,128 | 1.52× | 1.58× |
-| 4 | 16,128,4,128 | 2.29× | 2.71× | | 11 | 64,128,16,128 | 2.56× | 3.07× |
-| 5 | 128,128,4,128 | 1.78× | 2.29× | | 12 | 64,128,4,32 | 2.33× | 2.07× |
-| 6 | 10000,128,4,128 | 1.85× | 1.91× | | 13 | 64,128,4,1024 | **4.00×** | **4.44×** |
+| 3 | 4,128,4,128 | 2.17× | 3.42× | | 10 | 64,128,2,128 | 1.52× | 1.56× |
+| 4 | 16,128,4,128 | 2.29× | 2.71× | | 11 | 64,128,16,128 | 2.56× | 3.03× |
+| 5 | 128,128,4,128 | 1.78× | 2.29× | | 12 | 64,128,4,32 | 2.33× | 2.18× |
+| 6 | 10000,128,4,128 | 1.85× | 1.83× | | 13 | 64,128,4,1024 | **4.00×** | **4.44×** |
 | 7 | 64,32,4,128 | 2.07× | 2.72× | | 14 | 32,1024,16,100000 | infeasible→**runs** | |
+
+**Measurement protocol.** Every T4 cell above is the **median of three independent
+runs** of the shipped configuration (run medians 2.286x / 2.258x /
+2.339x; every run 13/13 PASS), and `max_abs` is the worst of the three. The
+per-shape spread, (max − min) / median, ranges from 0% to 18% — the widest
+on shape 4, where a few-millisecond baseline is at the mercy of a shared cloud GPU.
+Differences smaller than that between two configurations are noise, and the text
+says so wherever it applies. All three runs are in `results/results_t4_runs.csv`.
 
 Two things in that table are worth stating rather than glossing:
 
-**The T4's baselines are slower than the P100's** (shape 13: 324.0 ms vs
-168.6 ms; shape 6: 1536.7 ms vs 772.3 ms). The P100 has higher fp32 throughput
+**The T4's baselines are slower than the P100's** (shape 13: 324.6 ms vs
+168.6 ms; shape 6: 1516.8 ms vs 772.3 ms). The P100 has higher fp32 throughput
 and roughly twice the memory bandwidth. Our ratios improve on the T4 anyway,
 because the optimized path gains `torch.compile` there while the baseline stays
 bandwidth-bound — the attention kernel is the same memory-efficient one on both

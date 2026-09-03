@@ -1,0 +1,85 @@
+=== ENV ===
+gpu Tesla T4 | torch 2.10.0+cu128 | cuda 12.8 | cc (7, 5)
+sdpa backend probe  (head_dim -> which backends can run, is_causal=True)
+  PROBE float32  hd=   8  flash=no   efficient=yes  math=yes
+  PROBE float32  hd=  32  flash=no   efficient=yes  math=yes
+  PROBE float32  hd=  64  flash=no   efficient=yes  math=yes
+  PROBE float32  hd= 128  flash=no   efficient=yes  math=yes
+  PROBE float32  hd= 256  flash=no   efficient=yes  math=yes
+  PROBE float16  hd=   8  flash=no   efficient=yes  math=yes
+  PROBE float16  hd=  32  flash=no   efficient=yes  math=yes
+  PROBE float16  hd=  64  flash=no   efficient=yes  math=yes
+  PROBE float16  hd= 128  flash=no   efficient=yes  math=yes
+  PROBE float16  hd= 256  flash=no   efficient=yes  math=yes
+  shapes -> head_dim: D=128,H=4 -> 32 | D=32,H=4 -> 8 | D=1024,H=4 -> 256 | D=128,H=1 -> 128 | D=128,H=2 -> 64 | D=128,H=16 -> 8 | shape14 D=1024,H=16 -> 64
+
+##### SHAPE 1 : B=64 D=128 H=4 S=128 L=4 F=128 #####
+autotune: eager=8.0937ms compiled=4.4652ms graph=4.9572ms -> compiled
+PASS max_abs=1.19e-06 max_rel=0.191 | baseline=9.6785ms optimized=4.2926ms | speedup=2.255x
+
+##### SHAPE 2 : B=1 D=128 H=4 S=128 L=4 F=128 #####
+autotune: eager=1.4153ms compiled=0.8253ms graph=0.7675ms -> graph
+PASS max_abs=9.54e-07 max_rel=0.0865 | baseline=3.2850ms optimized=0.8300ms | speedup=3.958x
+
+##### SHAPE 3 : B=4 D=128 H=4 S=128 L=4 F=128 #####
+autotune: eager=1.5460ms compiled=1.0995ms graph=1.0690ms -> graph
+PASS max_abs=1.19e-06 max_rel=0.0769 | baseline=3.2503ms optimized=0.9495ms | speedup=3.423x
+
+##### SHAPE 4 : B=16 D=128 H=4 S=128 L=4 F=128 #####
+autotune: eager=1.8223ms compiled=2.1097ms graph=2.3881ms -> eager
+PASS max_abs=1.19e-06 max_rel=0.658 | baseline=3.4386ms optimized=1.4411ms | speedup=2.386x
+
+##### SHAPE 5 : B=128 D=128 H=4 S=128 L=4 F=128 #####
+autotune: eager=10.0598ms compiled=8.4727ms graph=10.1044ms -> compiled
+PASS max_abs=1.43e-06 max_rel=4.33 | baseline=18.8723ms optimized=8.3580ms | speedup=2.258x
+
+##### SHAPE 6 : B=10000 D=128 H=4 S=128 L=4 F=128 #####
+PASS max_abs=1.67e-06 max_rel=2.84e+05 | baseline=1516.7717ms optimized=830.7938ms | speedup=1.826x
+
+##### SHAPE 7 : B=64 D=32 H=4 S=128 L=4 F=32 #####
+autotune: eager=2.0439ms compiled=2.3836ms graph=2.2174ms -> eager
+PASS max_abs=9.54e-07 max_rel=2 | baseline=6.4736ms optimized=2.3710ms | speedup=2.730x
+
+##### SHAPE 8 : B=64 D=1024 H=4 S=128 L=4 F=1024 #####
+autotune: eager=133.7320ms compiled=133.6177ms graph=134.2309ms -> compiled
+PASS max_abs=1.91e-06 max_rel=4.57 | baseline=145.6131ms optimized=133.8652ms | speedup=1.088x
+
+##### SHAPE 9 : B=64 D=128 H=1 S=128 L=4 F=128 #####
+autotune: eager=4.8618ms compiled=5.5153ms graph=5.1317ms -> eager
+PASS max_abs=1.43e-06 max_rel=0.233 | baseline=6.6990ms optimized=5.2415ms | speedup=1.278x
+
+##### SHAPE 10 : B=64 D=128 H=2 S=128 L=4 F=128 #####
+autotune: eager=4.8477ms compiled=5.4272ms graph=5.2398ms -> eager
+PASS max_abs=1.43e-06 max_rel=0.667 | baseline=8.2797ms optimized=5.3002ms | speedup=1.562x
+
+##### SHAPE 11 : B=64 D=128 H=16 S=128 L=4 F=128 #####
+autotune: eager=7.6683ms compiled=7.5633ms graph=7.5244ms -> graph
+PASS max_abs=1.43e-06 max_rel=0.387 | baseline=22.9151ms optimized=7.6033ms | speedup=3.014x
+
+##### SHAPE 12 : B=64 D=128 H=4 S=32 L=4 F=128 #####
+autotune: eager=1.4504ms compiled=1.5817ms graph=1.2964ms -> graph
+PASS max_abs=1.19e-06 max_rel=0.104 | baseline=3.3895ms optimized=1.5524ms | speedup=2.183x
+
+##### SHAPE 13 : B=64 D=128 H=4 S=1024 L=4 F=128 #####
+PASS max_abs=1.43e-06 max_rel=1.4 | baseline=324.5753ms optimized=74.4899ms | speedup=4.357x
+
+##### SHAPE 14 : optimized-only (baseline infeasible ~20.5 TB) #####
+skipped for this T3_ONLY selector
+
+=================== SUMMARY (copy from here) ===================
+shape,pass,max_abs,max_rel,baseline_ms,opt_ms,speedup,note
+1,PASS,1.1920928955078125e-06,0.19148938357830048,9.6785,4.2926,2.255,
+2,PASS,9.5367431640625e-07,0.08653856068849564,3.2850,0.8300,3.958,
+3,PASS,1.1920928955078125e-06,0.0769231989979744,3.2503,0.9495,3.423,
+4,PASS,1.1920928955078125e-06,0.6578947901725769,3.4386,1.4411,2.386,
+5,PASS,1.430511474609375e-06,4.333333969116211,18.8723,8.3580,2.258,
+6,PASS,1.6689300537109375e-06,284324.625,1516.7717,830.7938,1.826,
+7,PASS,9.5367431640625e-07,2.0,6.4736,2.3710,2.730,
+8,PASS,1.9073486328125e-06,4.568181991577148,145.6131,133.8652,1.088,
+9,PASS,1.430511474609375e-06,0.23333340883255005,6.6990,5.2415,1.278,
+10,PASS,1.430511474609375e-06,0.6666666269302368,8.2797,5.3002,1.562,
+11,PASS,1.430511474609375e-06,0.38666680455207825,22.9151,7.6033,3.014,
+12,PASS,1.1920928955078125e-06,0.10396042466163635,3.3895,1.5524,2.183,
+13,PASS,1.430511474609375e-06,1.399999976158142,324.5753,74.4899,4.357,
+# median_speedup=2.258x min=1.088x max=4.357x over 13 PASS shapes
+=================== END SUMMARY ===================

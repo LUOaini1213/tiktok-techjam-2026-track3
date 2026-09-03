@@ -242,6 +242,18 @@ End to end (`T3_ATTN=triton`, `results_t4_attn.csv`): 13/13 PASS, worst `max_abs
 `kaggle_t4_attn_v1.log` (first cut), `kaggle_t4_attn_v2.log` (the tables above),
 `kaggle_t4_attn_v3.log` (composition fix).
 
+## Measurement protocol
+
+Every T4 cell of the shipped per-shape table (`results/results_t4.csv`, reproduced in
+the README and the report) is the **median of three independent runs** of the shipped configuration (run medians 2.286x / 2.258x /
+2.339x; every run 13/13 PASS), and `max_abs` is the worst of the three. The
+per-shape spread, (max − min) / median, ranges from 0% to 18% — the widest
+on shape 4, where a few-millisecond baseline is at the mercy of a shared cloud GPU.
+The per-configuration tables in this file (compile policy, fused QKV, Triton kernels,
+precision regimes) are single runs, so that spread is the yardstick for them: a
+difference below it between two configurations is noise, and the text says so
+wherever it applies. All three runs are in `results/results_t4_runs.csv`.
+
 ## Cross-GPU: what the hardware is worth
 
 The same code on two free cards, both fp32, both 13/13 PASS:
@@ -251,9 +263,9 @@ The same code on two free cards, both fp32, both 13/13 PASS:
 | `torch.compile` | unavailable (Triton needs sm>=7.0) | autotuned per shape with eager and a CUDA graph as rivals: 4 compiled / 4 graph / 3 eager of 11 tuned |
 | SDPA backend | memory-efficient | memory-efficient (same kernel: flash needs fp16 and sm_80+, probed) |
 | median speedup | 2.065x | **2.286x** |
-| range | 1.098x - 4.001x | 1.094x - 4.436x |
+| range | 1.098x - 4.001x | 1.088x - 4.436x |
 
-Note the T4's *baselines* are slower than the P100's (shape 13: 324.0 ms vs
+Note the T4's *baselines* are slower than the P100's (shape 13: 324.6 ms vs
 168.6 ms) — the P100 has higher fp32 throughput and roughly twice the memory
 bandwidth. The ratio improves on the T4 anyway, because our path picks up
 compile there while the baseline stays bandwidth-bound; the attention kernel is

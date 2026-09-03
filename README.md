@@ -11,7 +11,8 @@ Five results, each traceable to a committed kernel log under `results/`:
 
 1. **13/13 graded shapes pass at `max_abs` ~1.9e-6** — about 1049x inside the
    `atol=0.002` gate — with a **median speedup of 2.29x on a free Tesla T4**
-   (2.07x on a P100), from fused attention plus a per-shape autotune over eager,
+   (per-shape median of three independent runs; 2.07x on a P100), from fused
+   attention plus a per-shape autotune over eager,
    `torch.compile` and CUDA-graph replay.
 2. **Shape 14 runs.** Its reference needs ~20.5 TB of attention scores and cannot
    execute; ours completes the 100,000-token forward in 14.6 GB (204 s on the T4).
@@ -122,7 +123,7 @@ to the run that produced it.
 | GPU | what it can run | median speedup | range | worst `max_abs` |
 |---|---|---|---|---|
 | Tesla P100 (`sm_60`) | SDPA only | 2.065x | 1.098x - 4.001x | 1.91e-6 |
-| **Tesla T4 (`sm_75`)** | **SDPA + first-forward autotune: eager / `torch.compile` / CUDA graph** | **2.286x** | 1.094x - 4.436x | 1.91e-6 |
+| **Tesla T4 (`sm_75`)** | **SDPA + first-forward autotune: eager / `torch.compile` / CUDA graph** | **2.286x** | 1.088x - 4.436x | 1.91e-6 |
 | Tesla T4, `T3_AUTOCAST=fp16` | + fp16 tensor cores | 4.014x | 1.320x - 11.528x | 2.04e-3 — *see below* |
 
 Kaggle's API hands out a P100 unless you ask otherwise, which is why the first
@@ -136,20 +137,28 @@ Per shape, fp32 (`results/results.csv` = P100, `results/results_t4.csv` = T4):
 |---|---|---|---|---|---|
 | 1 | 64,128,4,128,128 | 5.91 -> 3.37 | 1.75x | 9.59 -> 4.24 | 2.26x |
 | 2 | 1,128,4,128,128 | 3.16 -> 1.48 | 2.14x | 3.36 -> 0.83 | 4.05x |
-| 3 | 4,128,4,128,128 | 3.18 -> 1.46 | 2.17x | 3.32 -> 0.94 | 3.52x |
-| 4 | 16,128,4,128,128 | 3.15 -> 1.38 | 2.29x | 3.36 -> 1.24 | 2.71x |
+| 3 | 4,128,4,128,128 | 3.18 -> 1.46 | 2.17x | 3.32 -> 0.95 | 3.42x |
+| 4 | 16,128,4,128,128 | 3.15 -> 1.38 | 2.29x | 3.44 -> 1.24 | 2.71x |
 | 5 | 128,128,4,128,128 | 11.00 -> 6.19 | 1.78x | 18.79 -> 8.22 | 2.29x |
-| 6 | 10000,128,4,128,128 | 772.29 -> 417.97 | 1.85x | 1536.75 -> 812.13 | 1.89x |
-| 7 | 64,32,4,128,32 | 4.05 -> 1.96 | 2.06x | 6.42 -> 2.31 | 2.78x |
+| 6 | 10000,128,4,128,128 | 772.29 -> 417.97 | 1.85x | 1516.77 -> 830.79 | 1.83x |
+| 7 | 64,32,4,128,32 | 4.05 -> 1.96 | 2.06x | 6.47 -> 2.33 | 2.78x |
 | 8 | 64,1024,4,128,1024 | 70.93 -> 64.59 | 1.10x | 148.48 -> 135.75 | 1.09x |
-| 9 | 64,128,1,128,128 | 3.85 -> 3.11 | 1.24x | 6.67 -> 5.21 | 1.28x |
-| 10 | 64,128,2,128,128 | 4.77 -> 3.13 | 1.52x | 8.19 -> 5.18 | 1.58x |
-| 11 | 64,128,16,128,128 | 12.54 -> 4.91 | 2.56x | 22.72 -> 7.40 | 3.07x |
-| 12 | 64,128,4,32,128 | 3.06 -> 1.32 | 2.33x | 3.13 -> 1.51 | 2.07x |
-| 13 | 64,128,4,1024,128 | 168.60 -> 42.15 | 4.00x | 324.02 -> 73.04 | 4.44x |
+| 9 | 64,128,1,128,128 | 3.85 -> 3.11 | 1.24x | 6.70 -> 5.24 | 1.28x |
+| 10 | 64,128,2,128,128 | 4.77 -> 3.13 | 1.52x | 8.28 -> 5.30 | 1.56x |
+| 11 | 64,128,16,128,128 | 12.54 -> 4.91 | 2.56x | 22.92 -> 7.60 | 3.03x |
+| 12 | 64,128,4,32,128 | 3.06 -> 1.32 | 2.33x | 3.39 -> 1.53 | 2.18x |
+| 13 | 64,128,4,1024,128 | 168.60 -> 42.15 | 4.00x | 324.58 -> 74.49 | 4.44x |
+
+**Measurement protocol.** Every T4 cell above is the **median of three independent
+runs** of the shipped configuration (run medians 2.286x / 2.258x /
+2.339x; every run 13/13 PASS), and `max_abs` is the worst of the three. The
+per-shape spread, (max − min) / median, ranges from 0% to 18% — the widest
+on shape 4, where a few-millisecond baseline is at the mercy of a shared cloud GPU.
+Differences smaller than that between two configurations are noise, and the text
+says so wherever it applies. All three runs are in `results/results_t4_runs.csv`.
 
 One honest observation from that table: **the T4's baselines are slower than the
-P100's** (shape 13: 324.0 ms vs 168.6 ms). The P100 has more fp32 throughput and
+P100's** (shape 13: 324.6 ms vs 168.6 ms). The P100 has more fp32 throughput and
 about twice the memory bandwidth. The T4 ratios are better anyway because our
 path picks up compile there while the baseline stays
 bandwidth-bound. A speedup is a ratio; it is worth saying which side moved.
