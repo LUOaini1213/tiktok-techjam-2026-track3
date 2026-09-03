@@ -236,21 +236,44 @@ mysterious: 128 rows is 128 Triton programs, which does not fill a T4, while
 eager's two kernels are each small enough that launching two of them is cheaper
 than under-occupying one.
 
-**End to end it is a net loss, and we ship it off.** Enabling it
-(`T3_TRITON=1`) scores **1.929×** median against the shipped path's **2.282×**,
-still 13/13 PASS (`results/results_t4_triton.csv`).
+**End to end, as a raw launch, it was a net loss: 1.929× against 2.282×.**
+A raw Triton call breaks a `torch.compile` graph, so the first version had to
+switch compilation off to run at all, trading one won fusion for every fusion
+Inductor was doing elsewhere.
 
-The reason is integration, not the kernel. Calling a raw Triton kernel from
-inside a `torch.compile` region breaks the graph, so `T3_TRITON=1` turns
-compilation off. We therefore trade *one* fusion we win for *all* the other
-fusions Inductor was doing — the other LayerNorm, the bias+GELU epilogue, the
-pointwise chains. Winning a single operator by 9% does not pay for losing the
-rest.
+**So we did the fix.** The kernel is now registered through
+`torch.library.triton_op` (`exactswap::fused_add_layernorm`), with
+`wrap_triton` letting the compiler trace the launch under FakeTensor mode, so
+Inductor schedules it *inside* the compiled graph. `T3_TRITON=1` no longer turns
+compilation off. A second run, all columns from the same session
+(`results/triton_bench_t4.csv`, `results/kaggle_t4_triton_bench.log`):
 
-The fix is real and we ran out of time for it: register the kernel through
-`torch.library` so Inductor can call it *inside* the compiled graph instead of
-being switched off around it. Until then the honest configuration is the one
-that is faster, and the kernel stays behind a flag with its numbers published.
+| case | rows × D | eager | Inductor | registered op, eager | **op inside Inductor's graph** | in-graph vs Inductor |
+|---|---|---|---|---|---|---|
+| shape 6 | 1.28M × 128 | 20.043 | 11.080 | 10.592 | **10.594** | **1.046×** |
+| shape 13 | 65536 × 128 | 1.055 | 0.657 | 0.634 | **0.633** | **1.038×** |
+| shape 8 | 8192 × 1024 | 0.734 | 0.674 | 0.666 | **0.666** | 1.012× |
+| shape 2 | 128 × 128 | 0.049 | 0.108 | 0.129 | 0.107 | 1.008× |
+| shape 7 | 8192 × 32 | 0.095 | **0.108** | 0.125 | 0.125 | 0.862× |
+| shape 1/5/9–11 | 8192 × 128 | 0.236 | **0.150** | 0.186 | 0.183 | 0.819× |
+
+**End to end: 1.929× → 2.190× with registration, against 2.282× shipped**,
+still 13/13 PASS (`results/results_t4_triton.csv`). The mechanism was right —
+composing with the compiler recovered most of the loss — and it still does not
+win, for two reasons the table makes visible:
+
+- **Inductor's own fusion of these two ops is within ±5% of the hand-written
+  kernel** on the memory-bound shapes (1.01–1.05× in our favour), which is to say
+  the compiler already writes this kernel about as well as we did.
+- **On the small and narrow shapes Inductor wins outright** (0.82–0.86×): it
+  fuses *across* op boundaries, and a custom op is an opaque wall it cannot see
+  through. Registration also costs 30–70 µs of dispatcher overhead per call —
+  compare the registered-op column against the raw-launch table above on the
+  128-row and 8192×32 cases — which only launch-bound shapes notice.
+
+We matched the compiler. We did not beat it. The kernel stays behind
+`T3_TRITON`, correct and composable, with every number published; the shipped
+path is the one that is faster.
 
 ## Correctness notes
 

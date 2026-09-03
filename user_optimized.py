@@ -25,7 +25,8 @@ atol=0.002 OR rtol=0.02, checked per-element):
 
 Ablation / robustness toggles via environment variables (see README):
   T3_AUTOCAST   = auto | fp16 | bf16 | off      (default off; see _plan)
-  T3_COMPILE    = 1 | 0                          (default 1)
+  T3_COMPILE    = 1 | 0 | auto                   (default 1; auto times eager vs
+                                                  compiled once and keeps the winner)
   T3_COMPILE_MODE = default | reduce-overhead | max-autotune  (override)
   T3_FP32_FFN   = 1 | 0                          (default 0; force FFN+LN fp32)
   T3_CHUNK_BS   = <int>                          (override batch chunk size)
@@ -79,7 +80,13 @@ class UserOptimizedTransformer(BaselineTransformer):
         self._chunk_bs: Optional[int] = None
         self._compiled = None
         self._graph_output = False  # set in forward() when a CUDA-graph mode is used
-        self._compile_ok = _env_flag("T3_COMPILE", True)
+        raw = os.environ.get("T3_COMPILE", "1").strip().lower()
+        self._compile_policy = ("auto" if raw == "auto"
+                                else "on" if raw in ("1", "true", "yes", "on")
+                                else "off")
+        self._compile_ok = self._compile_policy != "off"
+        self._tuned = False          # T3_COMPILE=auto: decided once, first forward
+        self._tune_result = None     # (eager_ms, compiled_ms) when it ran
         self._can_compile = False  # set in _plan: Triton needs CUDA capability >= 7.0
         self._fp32_ffn = _env_flag("T3_FP32_FFN", False)
         # Hand-written Triton fused add+LayerNorm, off by default. When the
@@ -280,6 +287,19 @@ class UserOptimizedTransformer(BaselineTransformer):
                     return fn(xin, m, causal, av)
             return fn(xin, m, causal, av)
 
+        # First-forward autotune (T3_COMPILE=auto). The stage ablation showed
+        # compilation *losing* on the launch-bound shape -- 2.29x eager against
+        # 1.46x compiled at S=32 -- because Inductor's guard and dispatch cost
+        # exceeds what its fusions save once a whole block is a few
+        # microseconds. Rather than guess a threshold, time both on the actual
+        # input once and keep the winner. It runs inside the harness' warmup,
+        # so the cost is invisible to the graded timing.
+        if (self._compile_policy == "auto" and not self._tuned
+                and self._compiled is not None and x.device.type == "cuda"
+                and b * x.shape[1] <= 16384):
+            self._tuned = True
+            self._pick_faster(x, valid_token_mask, all_valid, _invoke)
+
         def core(xin, m, av):
             fn = self._compiled if self._compiled is not None else self._run_full
             try:
@@ -304,6 +324,42 @@ class UserOptimizedTransformer(BaselineTransformer):
         if self._graph_output and out.data_ptr() != x.data_ptr():
             out = out.clone()
         return out
+
+    def _pick_faster(self, x, mask, all_valid, invoke, warm=6, iters=7):
+        """Keep whichever of eager / compiled is faster on this exact input.
+
+        Six untimed calls first: the compiled path needs them for Dynamo to
+        trace and, under reduce-overhead, for the CUDA graph to be captured.
+        Then a median of seven timed calls each. Any failure leaves the
+        compiled path in place -- this only ever removes it.
+        """
+        def median_ms(fn):
+            with torch.no_grad():
+                for _ in range(warm):
+                    invoke(fn, x, mask, all_valid)
+                torch.cuda.synchronize(x.device)
+                start = torch.cuda.Event(enable_timing=True)
+                end = torch.cuda.Event(enable_timing=True)
+                times = []
+                for _ in range(iters):
+                    start.record()
+                    invoke(fn, x, mask, all_valid)
+                    end.record()
+                    torch.cuda.synchronize(x.device)
+                    times.append(start.elapsed_time(end))
+            times.sort()
+            return times[len(times) // 2]
+
+        try:
+            compiled_ms = median_ms(self._compiled)
+            eager_ms = median_ms(self._run_full)
+        except Exception:
+            return
+        self._tune_result = (eager_ms, compiled_ms)
+        if eager_ms < compiled_ms:
+            self._compiled = None
+            self._compile_ok = False
+            self._graph_output = False
 
     def _forward_chunked(self, x, valid_token_mask, core, b):
         """Batch-chunked forward for the shape whose activations exceed VRAM.

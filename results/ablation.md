@@ -113,11 +113,26 @@ the `[B,S,D]` activation. Measured on a T4 at the real sizes
 
 Beats eager on 5 of 6, Inductor on 5 of 6, `max_abs ≤ 1.43e-6`.
 
-**And end to end it loses:** 1.929× median with `T3_TRITON=1` against 2.282×
-shipped, still 13/13 PASS. A raw Triton call breaks a compiled graph, so
-enabling the kernel disables `torch.compile`, and one won fusion does not pay
-for every fusion Inductor was doing elsewhere. Off by default; the fix is
-`torch.library` registration so Inductor can call it from inside the graph.
+**End to end, as a raw launch, it lost:** 1.929× against 2.282×, because a
+raw Triton call breaks the compiled graph and enabling the kernel switched
+`torch.compile` off.
+
+**Registered as a `torch.library` op, it composes** — Inductor schedules it inside
+the graph, compile stays on. Same session, all columns (`triton_bench_t4.csv`):
+
+| case | rows × D | eager | Inductor | registered op, eager | **op inside Inductor's graph** | in-graph vs Inductor |
+|---|---|---|---|---|---|---|
+| shape 6 | 1.28M × 128 | 20.043 | 11.080 | 10.592 | **10.594** | **1.046×** |
+| shape 13 | 65536 × 128 | 1.055 | 0.657 | 0.634 | **0.633** | **1.038×** |
+| shape 8 | 8192 × 1024 | 0.734 | 0.674 | 0.666 | **0.666** | 1.012× |
+| shape 2 | 128 × 128 | 0.049 | 0.108 | 0.129 | 0.107 | 1.008× |
+| shape 7 | 8192 × 32 | 0.095 | **0.108** | 0.125 | 0.125 | 0.862× |
+| shape 1/5/9–11 | 8192 × 128 | 0.236 | **0.150** | 0.186 | 0.183 | 0.819× |
+
+End to end: **2.190×** registered, against 2.282× shipped, 13/13 PASS. Inductor's
+own fusion is within ±5% of ours on the memory-bound shapes and wins on the
+small ones, where a custom op is an opaque boundary and dispatch overhead
+(30–70 µs) shows. Matched the compiler; did not beat it. Off by default.
 
 ## Cross-GPU: what the hardware is worth
 

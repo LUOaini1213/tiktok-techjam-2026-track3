@@ -292,6 +292,11 @@ def _main():
             copy_model_weights(baseline, optimized, strict=True)
             optimized = optimized.to(device, dtype).eval()
             ok, mabs, mrel = _accuracy(baseline, optimized, cfg, device, dtype)
+            tr = getattr(optimized, "_tune_result", None)
+            if tr is not None:
+                print(f"autotune: eager={tr[0]:.4f}ms compiled={tr[1]:.4f}ms -> "
+                      f"{'eager' if optimized._compiled is None else 'compiled'}",
+                      flush=True)
             if ok:
                 xt, mt = generate_random_case(cfg, device, dtype, 101234, 0.0, 1.0)
                 bms = _bench(baseline, xt, mt); oms = _bench(optimized, xt, mt)

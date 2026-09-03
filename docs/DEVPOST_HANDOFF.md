@@ -167,9 +167,21 @@ committed before a single activation. Correctness for shape 14 is therefore esta
 
 Five of six against eager, five of six against Inductor, at `max_abs` $\le 1.43\times10^{-6}$. The single real loss is the 128-row case, and it is explainable rather than mysterious: 128 rows is 128 Triton programs, which does not fill a T4, while eager's two kernels are each small enough that launching two beats under-occupying one.
 
-**End to end it is a net loss, so we ship it off.** With `T3_TRITON=1` the sweep scores **1.929×** median against the shipped **2.282×** — still 13/13 PASS. The cause is integration, not the kernel: calling a raw Triton kernel from inside a `torch.compile` region breaks the graph, so enabling ours turns compilation off, and we trade *one* fusion we win for *every* fusion Inductor was doing elsewhere. Winning one operator by 9% does not pay for losing the rest. The fix is `torch.library` registration so Inductor can call it from inside the graph, and we ran out of time for it.
+**End to end, as a raw launch, it was a net loss.** With `T3_TRITON=1` the sweep scored **1.929×** median against the shipped **2.282×**, because a raw Triton call breaks a `torch.compile` graph, so enabling the kernel turned compilation off and traded *one* fusion we win for *every* fusion Inductor was doing elsewhere.
 
-So the kernel exists, it is correct, it beats both alternatives on its own benchmark, and it is disabled — with all four of those numbers published rather than the flattering one.
+**So we did the fix.** Registered through `torch.library.triton_op`, with `wrap_triton` letting the compiler trace the launch, the kernel now runs *inside* Inductor's graph and compilation stays on. Same session, all columns:
+
+| case | rows $\times$ D | Inductor | **our op in-graph** | ratio |
+|---|---|---|---|---|
+| shape 6 | 1.28M $\times$ 128 | 11.080 ms | **10.594 ms** | **1.046×** |
+| shape 13 | 65536 $\times$ 128 | 0.657 ms | **0.633 ms** | **1.038×** |
+| shape 8 | 8192 $\times$ 1024 | 0.674 ms | **0.666 ms** | 1.012× |
+| shape 7 | 8192 $\times$ 32 | **0.108 ms** | 0.125 ms | 0.862× |
+| shape 1 | 8192 $\times$ 128 | **0.150 ms** | 0.183 ms | 0.819× |
+
+End to end: $1.929\times \to 2.190\times$ with registration, against $2.282\times$ shipped — still 13/13 PASS. The mechanism was right; composing with the compiler recovered most of the loss. And it still does not win, for two reasons the table makes visible: Inductor's own fusion of these two ops is within $\pm 5\%$ of the hand-written kernel on the memory-bound shapes — the compiler already writes this kernel about as well as we did — and on the small, narrow shapes it wins outright, because it fuses *across* op boundaries where a custom op is an opaque wall, and because registration costs 30–70 µs of dispatch per call that only launch-bound shapes notice.
+
+**We matched the compiler. We did not beat it.** The kernel exists, is correct, composes with `torch.compile`, and ships disabled — with all of those numbers published rather than the flattering one.
 
 ## Challenges we ran into
 
@@ -211,11 +223,11 @@ over near-zero references — and why a `max_abs` of $2.04\times10^{-3}$ is disq
 - **A memory bug can surface one line away from its cause.** The OOM appeared in the attention and lived in the concat.
 - **Cheap infrastructure facts dominate expensive optimization work.** One undocumented string, `NvidiaTeslaT4`, was worth more than any kernel change we made: it unlocked three levers at once.
 - **Audit your own claims adversarially.** Four of ours were wrong, and all four had survived several careful re-readings by the people who wrote them.
-- **A faster operator is not a faster program.** Our kernel beats Inductor on five of six sizes and still loses end to end, because switching it on switches compilation off. The unit you benchmark has to be the unit you ship.
+- **A faster operator is not a faster program.** Our kernel beat Inductor's fusion at the operator level and lost end to end twice: first because switching it on switched compilation off, then — after we fixed that — because a custom op is a boundary the compiler cannot fuse across. The unit you benchmark has to be the unit you ship.
 
 ## What's next
 
-Registering the Triton kernel through `torch.library` so Inductor can call it inside the compiled graph instead of being switched off around it — that single change decides whether the kernel is a curiosity or a win. The fused bias+GELU epilogue was scoped and dropped, since Inductor already fuses it; a Turing-specific FlashAttention kernel is a multi-day effort we scoped and did not attempt. The padded fallback still materializes a dense $[B,1,S,S]$ bias, giving back exactly the $O(S^2)$ memory SDPA exists to avoid; the graded path never takes it, but making it memory-efficient is unfinished work rather than a solved problem.
+A kernel that fuses *more* than Inductor is willing to — the add, the LayerNorm, *and* the following projection's input cast in one pass — since matching the compiler's own fusion of two ops turned out not to be enough to beat it. The fused bias+GELU epilogue was scoped and dropped, since Inductor already fuses it; a Turing-specific FlashAttention kernel is a multi-day effort we scoped and did not attempt. The padded fallback still materializes a dense $[B,1,S,S]$ bias, giving back exactly the $O(S^2)$ memory SDPA exists to avoid; the graded path never takes it, but making it memory-efficient is unfinished work rather than a solved problem.
 
 And the experiment we ran out of time for: a mixed assignment — fp16 matmuls with selected fp32 reductions — that keeps most of the $2\times$ while restoring a real margin. Somewhere between $0.98\times$ and $1049\times$ there is a configuration worth shipping.
 

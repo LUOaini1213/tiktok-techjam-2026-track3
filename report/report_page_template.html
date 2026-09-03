@@ -565,16 +565,18 @@
   </div>
 
   <div class="callout warn">
-    <span class="label">It wins its own benchmark and loses the program</span>
-    <p>End to end, <code>T3_TRITON=1</code> scores <strong>1.929&times;</strong> median against the
-    shipped path's <strong>2.282&times;</strong> &mdash; still 13/13 PASS. The cause is
-    integration, not the kernel: a raw Triton call breaks a <code>torch.compile</code> graph, so
-    enabling ours turns compilation off, trading <em class="term">one</em> fusion we win for
-    <em class="term">every</em> fusion Inductor was doing elsewhere. Winning one operator by 9%
-    does not pay for losing the rest. The fix is <code>torch.library</code> registration so
-    Inductor can call it from inside the graph; we ran out of time for it. So the kernel exists,
-    is correct, beats both alternatives on its own benchmark &mdash; and ships disabled, with all
-    four of those facts published rather than the flattering one.</p>
+    <span class="label">It wins its own benchmark, and we matched the compiler rather than beat it</span>
+    <p>As a raw launch, enabling it forced <code>torch.compile</code> off &mdash; a raw Triton
+    call breaks the graph &mdash; and end to end it lost: <strong>1.929&times;</strong> against the
+    shipped <strong>2.282&times;</strong>. So we registered it through
+    <code>torch.library.triton_op</code>, which lets Inductor schedule it <em class="term">inside</em>
+    the compiled graph. That recovered most of the loss: <strong>2.190&times;</strong>, still
+    13/13 PASS. It still does not win. Inside the graph, Inductor's own fusion of these two
+    ops is within &plusmn;5% of ours on the memory-bound shapes and wins outright on the small
+    ones, where a custom op is an opaque wall the compiler cannot fuse across and dispatch
+    costs 30&ndash;70&nbsp;&micro;s a call. The kernel exists, is correct, composes with the
+    compiler, and ships disabled &mdash; with every number published rather than the
+    flattering one.</p>
   </div>
 </section>
 
