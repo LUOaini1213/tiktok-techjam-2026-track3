@@ -40,6 +40,9 @@ shape 14 at all; only a memory-efficient (FlashAttention-style) attention with
 3. **Self-applied `torch.compile`.** Inductor fuses LayerNorm/bias/GELU
    epilogues into Triton kernels; `reduce-overhead` (CUDA graphs) for
    launch-bound small shapes, `default` otherwise. Independent of `--compile-user`.
+   Because the ablation showed compilation *losing* on the launch-bound shape,
+   the model now times eager against compiled once, on the real input, during
+   the harness' warmup, and keeps the winner (`T3_COMPILE=auto`, the default).
 4. **Batch chunking into a preallocated output, shape 14 only.** The chunk size
    is planned from the VRAM that is actually free (`cuda.mem_get_info` plus the
    allocator's reserved-but-unused blocks), minus the output buffer, divided by
@@ -61,23 +64,23 @@ reproduction of the fp32 reference, ~1049× inside the `atol=0.002` gate.
 | regime | median | range | worst `max_abs` | margin vs `atol` |
 |---|---|---|---|---|
 | P100, SDPA only | 2.065× | 1.098-4.001× | 1.91e-6 | 1049× |
-| **T4, SDPA + compile (shipped)** | **2.282×** | 1.086-4.439× | 1.91e-6 | 1049× |
+| **T4, SDPA + autotuned compile (shipped)** | **2.280×** | 1.090-4.541× | 1.91e-6 | 1049× |
 | T4, + fp16 (`T3_AUTOCAST=fp16`) | 4.014× | 1.320-11.528× | 2.04e-3 | **0.98×** |
 
 | # | shape [B,D,H,S] | P100 | T4 | | # | shape [B,D,H,S] | P100 | T4 |
 |---|---|---|---|---|---|---|---|---|
 | 1 | 64,128,4,128 | 1.76× | 2.28× | | 8 | 64,1024,4,128 | 1.10× | 1.09× |
-| 2 | 1,128,4,128 | 2.14× | 3.36× | | 9 | 64,128,1,128 | 1.24× | 1.26× |
-| 3 | 4,128,4,128 | 2.17× | 3.01× | | 10 | 64,128,2,128 | 1.52× | 1.56× |
-| 4 | 16,128,4,128 | 2.29× | 2.68× | | 11 | 64,128,16,128 | 2.56× | 3.08× |
-| 5 | 128,128,4,128 | 1.78× | 1.95× | | 12 | 64,128,4,32 | 2.33× | 1.97× |
-| 6 | 10000,128,4,128 | 1.85× | 1.91× | | 13 | 64,128,4,1024 | **4.00×** | **4.44×** |
+| 2 | 1,128,4,128 | 2.14× | 3.65× | | 9 | 64,128,1,128 | 1.24× | 1.25× |
+| 3 | 4,128,4,128 | 2.17× | 3.14× | | 10 | 64,128,2,128 | 1.52× | 1.56× |
+| 4 | 16,128,4,128 | 2.29× | 2.91× | | 11 | 64,128,16,128 | 2.56× | 3.11× |
+| 5 | 128,128,4,128 | 1.78× | 1.99× | | 12 | 64,128,4,32 | 2.33× | 2.27× |
+| 6 | 10000,128,4,128 | 1.85× | 1.91× | | 13 | 64,128,4,1024 | **4.00×** | **4.54×** |
 | 7 | 64,32,4,128 | 2.07× | 2.72× | | 14 | 32,1024,16,100000 | infeasible→**runs** | |
 
 Two things in that table are worth stating rather than glossing:
 
-**The T4's baselines are slower than the P100's** (shape 13: 318.7 ms vs
-168.6 ms; shape 6: 1431.9 ms vs 772.3 ms). The P100 has higher fp32 throughput
+**The T4's baselines are slower than the P100's** (shape 13: 317.9 ms vs
+168.6 ms; shape 6: 1436.3 ms vs 772.3 ms). The P100 has higher fp32 throughput
 and roughly twice the memory bandwidth. Our ratios improve on the T4 anyway,
 because the optimized path gains `torch.compile` and the real FlashAttention
 backend there while the baseline stays bandwidth-bound. A speedup is a ratio and
@@ -90,7 +93,7 @@ only because the gate is `abs<=0.002` **OR** `rel<=0.02` and that element's
 reference happened to be large enough (`|ref| >= 0.102`) for the relative branch.
 Move the same error onto a near-zero reference and the element fails -- and one
 failing element fails the shape and forfeits the speed score entirely. We took
-the 2.282× that sits 1049× inside tolerance and left fp16 as a documented,
+the 2.280× that sits 1049× inside tolerance and left fp16 as a documented,
 measured flag. This is the one place where our earlier reasoning was wrong: the
 repo previously asserted fp16 "breaks the gate", which measurement disproved --
 the conclusion survived, the justification did not.
@@ -145,7 +148,8 @@ Figures: `figures/memory_wall.png` (the 20.5 TB wall), `figures/speedups.png`
   Inductor's own fusion on the memory-bound shapes (1.01–1.05× ours) and loses
   on the small ones (0.82–0.86×), where a custom op is an opaque boundary the
   compiler cannot fuse across. End to end: 1.929× as a raw launch with compile
-  off, 2.190× registered with compile on, 2.282× shipped without it. We matched
+  off, 2.190× registered with compile on, 2.282× with compilation fixed on and
+  none of it (2.280× under the autotune default). We matched
   the compiler and did not beat it; it stays **off by default** with every number
   published.
 - The fused bias+GELU epilogue was scoped and not built; Inductor already fuses

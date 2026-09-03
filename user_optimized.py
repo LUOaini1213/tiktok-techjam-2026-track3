@@ -25,8 +25,8 @@ atol=0.002 OR rtol=0.02, checked per-element):
 
 Ablation / robustness toggles via environment variables (see README):
   T3_AUTOCAST   = auto | fp16 | bf16 | off      (default off; see _plan)
-  T3_COMPILE    = 1 | 0 | auto                   (default 1; auto times eager vs
-                                                  compiled once and keeps the winner)
+  T3_COMPILE    = auto | 1 | 0                   (default auto: time eager vs compiled
+                                                  once, on the real input, keep the winner)
   T3_COMPILE_MODE = default | reduce-overhead | max-autotune  (override)
   T3_FP32_FFN   = 1 | 0                          (default 0; force FFN+LN fp32)
   T3_CHUNK_BS   = <int>                          (override batch chunk size)
@@ -80,7 +80,7 @@ class UserOptimizedTransformer(BaselineTransformer):
         self._chunk_bs: Optional[int] = None
         self._compiled = None
         self._graph_output = False  # set in forward() when a CUDA-graph mode is used
-        raw = os.environ.get("T3_COMPILE", "1").strip().lower()
+        raw = os.environ.get("T3_COMPILE", "auto").strip().lower()
         self._compile_policy = ("auto" if raw == "auto"
                                 else "on" if raw in ("1", "true", "yes", "on")
                                 else "off")

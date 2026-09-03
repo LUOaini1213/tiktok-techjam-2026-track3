@@ -11,7 +11,7 @@ output numerically identical to the reference implementation (per-element
 |---|---|
 | **`F.scaled_dot_product_attention` (FlashAttention)** | Replaces the baseline's `O(S²)` materialized score matrix with an `O(S)` fused kernel. Makes the `seq_len=100000` shape possible at all — the baseline would need **~20.5 TB** just for its attention scores. Measured: the full 100k-token forward completes in **14.6 GB** on a free P100. |
 | **Internal fp16 autocast** (`T3_AUTOCAST=fp16`, **opt-in**) | Lights up the tensor cores and roughly **doubles** the median speedup (2.28x -> 4.01x). Shipped **off**: it passes all 13 shapes, but its worst absolute error has already crossed `atol=0.002` and survives on the relative branch alone. Reductions stay in fp32. |
-| **Self-applied `torch.compile`** | Fuses LayerNorm / bias / GELU epilogues into Triton kernels; independent of the grader passing `--compile-user`. Needs sm≥7.0, so it is inactive on a P100. Measured on a T4 it is worth +0.3x on compute-bound shapes and is a **net loss** on the launch-bound one — see the ablation. |
+| **Self-applied `torch.compile`** | Fuses LayerNorm / bias / GELU epilogues into Triton kernels; independent of the grader passing `--compile-user`. Needs sm≥7.0, so it is inactive on a P100. Measured on a T4 it is worth +0.3x on compute-bound shapes and a **net loss** on launch-bound ones — so the model now times eager against compiled once, on the real input, and keeps the winner (`T3_COMPILE=auto`, the default). |
 | **Batch chunking into a preallocated output** (only `seq_len=1e5`) | Keeps activations inside a 16 GB GPU. Chunks are written in place rather than collected and `torch.cat`-ed — the concat holds the pieces *and* the joined result at once, which is what made this shape OOM. |
 
 We keep **every baseline submodule and parameter name unchanged** and rewrite
@@ -97,7 +97,7 @@ to the run that produced it.
 | GPU | what it can run | median speedup | range | worst `max_abs` |
 |---|---|---|---|---|
 | Tesla P100 (`sm_60`) | SDPA only | 2.065x | 1.098x - 4.001x | 1.91e-6 |
-| **Tesla T4 (`sm_75`)** | **SDPA + `torch.compile` + FlashAttention** | **2.282x** | 1.086x - 4.439x | 1.91e-6 |
+| **Tesla T4 (`sm_75`)** | **SDPA + FlashAttention + autotuned `torch.compile`** | **2.280x** | 1.090x - 4.541x | 1.91e-6 |
 | Tesla T4, `T3_AUTOCAST=fp16` | + fp16 tensor cores | 4.014x | 1.320x - 11.528x | 2.04e-3 — *see below* |
 
 Kaggle's API hands out a P100 unless you ask otherwise, which is why the first
@@ -109,22 +109,22 @@ Per shape, fp32 (`results/results.csv` = P100, `results/results_t4.csv` = T4):
 
 | # | B,D,H,S,F | P100 base -> opt | P100 | T4 base -> opt | T4 |
 |---|---|---|---|---|---|
-| 1 | 64,128,4,128,128 | 5.91 -> 3.37 | 1.75x | 9.54 -> 4.18 | 2.28x |
-| 2 | 1,128,4,128,128 | 3.16 -> 1.48 | 2.14x | 3.05 -> 0.91 | 3.36x |
-| 3 | 4,128,4,128,128 | 3.18 -> 1.46 | 2.17x | 3.16 -> 1.05 | 3.01x |
-| 4 | 16,128,4,128,128 | 3.15 -> 1.38 | 2.29x | 3.30 -> 1.23 | 2.68x |
-| 5 | 128,128,4,128,128 | 11.00 -> 6.19 | 1.78x | 18.47 -> 9.50 | 1.95x |
-| 6 | 10000,128,4,128,128 | 772.29 -> 417.97 | 1.85x | 1431.88 -> 761.33 | 1.88x |
-| 7 | 64,32,4,128,32 | 4.05 -> 1.96 | 2.06x | 6.33 -> 2.33 | 2.71x |
-| 8 | 64,1024,4,128,1024 | 70.93 -> 64.59 | 1.10x | 128.51 -> 118.32 | 1.09x |
-| 9 | 64,128,1,128,128 | 3.85 -> 3.11 | 1.24x | 6.43 -> 5.10 | 1.26x |
-| 10 | 64,128,2,128,128 | 4.77 -> 3.13 | 1.52x | 8.02 -> 5.14 | 1.56x |
-| 11 | 64,128,16,128,128 | 12.54 -> 4.91 | 2.56x | 22.41 -> 7.27 | 3.08x |
-| 12 | 64,128,4,32,128 | 3.06 -> 1.32 | 2.33x | 3.00 -> 1.52 | 1.97x |
-| 13 | 64,128,4,1024,128 | 168.60 -> 42.15 | 4.00x | 318.74 -> 71.81 | 4.44x |
+| 1 | 64,128,4,128,128 | 5.91 -> 3.37 | 1.75x | 9.45 -> 4.14 | 2.28x |
+| 2 | 1,128,4,128,128 | 3.16 -> 1.48 | 2.14x | 3.37 -> 0.92 | 3.65x |
+| 3 | 4,128,4,128,128 | 3.18 -> 1.46 | 2.17x | 3.45 -> 1.10 | 3.14x |
+| 4 | 16,128,4,128,128 | 3.15 -> 1.38 | 2.29x | 3.57 -> 1.23 | 2.91x |
+| 5 | 128,128,4,128,128 | 11.00 -> 6.19 | 1.78x | 18.30 -> 9.20 | 1.99x |
+| 6 | 10000,128,4,128,128 | 772.29 -> 417.97 | 1.85x | 1436.28 -> 749.81 | 1.92x |
+| 7 | 64,32,4,128,32 | 4.05 -> 1.96 | 2.06x | 6.36 -> 2.35 | 2.71x |
+| 8 | 64,1024,4,128,1024 | 70.93 -> 64.59 | 1.10x | 132.13 -> 121.25 | 1.09x |
+| 9 | 64,128,1,128,128 | 3.85 -> 3.11 | 1.24x | 6.41 -> 5.11 | 1.25x |
+| 10 | 64,128,2,128,128 | 4.77 -> 3.13 | 1.52x | 7.98 -> 5.13 | 1.56x |
+| 11 | 64,128,16,128,128 | 12.54 -> 4.91 | 2.56x | 22.47 -> 7.22 | 3.11x |
+| 12 | 64,128,4,32,128 | 3.06 -> 1.32 | 2.33x | 3.43 -> 1.51 | 2.27x |
+| 13 | 64,128,4,1024,128 | 168.60 -> 42.15 | 4.00x | 317.90 -> 70.00 | 4.54x |
 
 One honest observation from that table: **the T4's baselines are slower than the
-P100's** (shape 13: 318.7 ms vs 168.6 ms). The P100 has more fp32 throughput and
+P100's** (shape 13: 317.9 ms vs 168.6 ms). The P100 has more fp32 throughput and
 about twice the memory bandwidth. The T4 ratios are better anyway because our
 path picks up compile and FlashAttention there while the baseline stays
 bandwidth-bound. A speedup is a ratio; it is worth saying which side moved.
@@ -188,8 +188,10 @@ ablation and the delivered path are literally the same code. The measured
 4-shape x 4-stage table is in [`results/ablation.md`](results/ablation.md)
 (machine-readable: `results/ablation_t4.csv`).
 
-Shipped defaults are `T3_AUTOCAST=off`, `T3_COMPILE=1`, i.e. **SDPA + compile**
-(compile activates only on `sm>=7.0`). Pass `--out` so a stage run does not
+Shipped defaults are `T3_AUTOCAST=off`, `T3_COMPILE=auto`: SDPA, plus
+compilation wherever a first-forward timing on the real input says it wins.
+On the T4 that was 7 of the 11 shapes small enough to tune; eager won shapes
+5, 8, 11 and 12, and shape 12 gained 15% for it (1.971x -> 2.271x). Pass `--out` so a stage run does not
 overwrite the committed `results/results.csv`:
 
 ```bash
@@ -257,7 +259,7 @@ compilation off. A second run, all columns from the same session
 | shape 7 | 8192 × 32 | 0.095 | **0.108** | 0.125 | 0.125 | 0.862× |
 | shape 1/5/9–11 | 8192 × 128 | 0.236 | **0.150** | 0.186 | 0.183 | 0.819× |
 
-**End to end: 1.929× → 2.190× with registration, against 2.282× shipped**,
+**End to end: 1.929× → 2.190× with registration, against 2.282× with compilation fixed on** (the autotune default now ships at 2.280×, within noise of that),
 still 13/13 PASS (`results/results_t4_triton.csv`). The mechanism was right —
 composing with the compiler recovered most of the loss — and it still does not
 win, for two reasons the table makes visible:

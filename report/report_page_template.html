@@ -439,7 +439,7 @@
         <tr><td>P100 <span class="mono">sm_60</span> &mdash; SDPA only</td>
             <td class="n mono">2.065&times;</td><td class="n mono">1.098&ndash;4.001&times;</td>
             <td class="n mono">1.91e-6</td><td class="n mono ok">1049&times;</td></tr>
-        <tr class="hi"><td><strong>T4 <span class="mono">sm_75</span> &mdash; SDPA + compile (shipped)</strong></td>
+        <tr class="hi"><td><strong>T4 <span class="mono">sm_75</span> &mdash; SDPA + autotuned compile (shipped)</strong></td>
             <td class="n mono">__MEDIAN__&times;</td><td class="n mono">__RANGE__</td>
             <td class="n mono">1.91e-6</td><td class="n mono ok">1049&times;</td></tr>
         <tr><td>T4 + fp16 <span class="mono">(opt-in)</span></td>
@@ -507,7 +507,7 @@
     <p>Nothing makes that repeatable. Put the same error on a near-zero reference and the element
     fails &mdash; and one failing element fails the shape and forfeits the speed score entirely.
     The trade is roughly twice the speed for a correctness margin of essentially zero on a hard
-    gate. We took the 2.36&times; that sits 1049&times; inside tolerance and left fp16 as a
+    gate. We took the 2.28&times; that sits 1049&times; inside tolerance and left fp16 as a
     documented, measured flag.</p>
   </div>
 
@@ -568,7 +568,7 @@
     <span class="label">It wins its own benchmark, and we matched the compiler rather than beat it</span>
     <p>As a raw launch, enabling it forced <code>torch.compile</code> off &mdash; a raw Triton
     call breaks the graph &mdash; and end to end it lost: <strong>1.929&times;</strong> against the
-    shipped <strong>2.282&times;</strong>. So we registered it through
+    <strong>2.282&times;</strong> with compilation fixed on. So we registered it through
     <code>torch.library.triton_op</code>, which lets Inductor schedule it <em class="term">inside</em>
     the compiled graph. That recovered most of the loss: <strong>2.190&times;</strong>, still
     13/13 PASS. It still does not win. Inside the graph, Inductor's own fusion of these two
