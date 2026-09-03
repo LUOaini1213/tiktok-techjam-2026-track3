@@ -9,7 +9,7 @@ output numerically identical to the reference implementation (per-element
 
 | Lever | Effect |
 |---|---|
-| **`F.scaled_dot_product_attention` (FlashAttention)** | Replaces the baseline's `O(S²)` materialized score matrix with an `O(S)` fused kernel. Makes the `seq_len=100000` shape possible at all — the baseline would need **~20.5 TB** just for its attention scores. Measured: the full 100k-token forward completes in **14.6 GB** on a free P100. |
+| **`F.scaled_dot_product_attention` (memory-efficient fused attention)** | Replaces the baseline's `O(S²)` materialized score matrix with an `O(S)` fused kernel. Makes the `seq_len=100000` shape possible at all — the baseline would need **~20.5 TB** just for its attention scores. Measured: the full 100k-token forward completes in **14.6 GB** on a free P100. |
 | **Internal fp16 autocast** (`T3_AUTOCAST=fp16`, **opt-in**) | Lights up the tensor cores and roughly **doubles** the median speedup (2.28x -> 4.01x). Shipped **off**: it passes all 13 shapes, but its worst absolute error has already crossed `atol=0.002` and survives on the relative branch alone. Reductions stay in fp32. |
 | **Self-applied `torch.compile`** | Fuses LayerNorm / bias / GELU epilogues into Triton kernels; independent of the grader passing `--compile-user`. Needs sm≥7.0, so it is inactive on a P100. Measured on a T4 it is worth +0.3x on compute-bound shapes and a **net loss** on launch-bound ones — so the model now times eager against compiled once, on the real input, and keeps the winner (`T3_COMPILE=auto`, the default). |
 | **Batch chunking into a preallocated output** (only `seq_len=1e5`) | Keeps activations inside a 16 GB GPU. Chunks are written in place rather than collected and `torch.cat`-ed — the concat holds the pieces *and* the joined result at once, which is what made this shape OOM. |
@@ -97,13 +97,13 @@ to the run that produced it.
 | GPU | what it can run | median speedup | range | worst `max_abs` |
 |---|---|---|---|---|
 | Tesla P100 (`sm_60`) | SDPA only | 2.065x | 1.098x - 4.001x | 1.91e-6 |
-| **Tesla T4 (`sm_75`)** | **SDPA + FlashAttention + autotuned `torch.compile`** | **2.280x** | 1.090x - 4.541x | 1.91e-6 |
+| **Tesla T4 (`sm_75`)** | **SDPA + autotuned `torch.compile`** | **2.280x** | 1.090x - 4.541x | 1.91e-6 |
 | Tesla T4, `T3_AUTOCAST=fp16` | + fp16 tensor cores | 4.014x | 1.320x - 11.528x | 2.04e-3 — *see below* |
 
 Kaggle's API hands out a P100 unless you ask otherwise, which is why the first
-row exists: on `sm_60` Triton will not build, so `torch.compile` never engages
-and SDPA falls back to its memory-efficient backend. Pass
-`--accelerator NvidiaTeslaT4` and the full stack lights up.
+row exists: on `sm_60` Triton will not build, so `torch.compile` never engages.
+Pass `--accelerator NvidiaTeslaT4` and compilation lights up. The attention
+kernel itself is the **same on both cards** — see the next section.
 
 Per shape, fp32 (`results/results.csv` = P100, `results/results_t4.csv` = T4):
 
@@ -126,8 +126,28 @@ Per shape, fp32 (`results/results.csv` = P100, `results/results_t4.csv` = T4):
 One honest observation from that table: **the T4's baselines are slower than the
 P100's** (shape 13: 317.9 ms vs 168.6 ms). The P100 has more fp32 throughput and
 about twice the memory bandwidth. The T4 ratios are better anyway because our
-path picks up compile and FlashAttention there while the baseline stays
+path picks up compile there while the baseline stays
 bandwidth-bound. A speedup is a ratio; it is worth saying which side moved.
+
+### Which attention kernel actually ran — measured, not assumed
+
+Earlier drafts of this README said "FlashAttention". We probed it: force each
+SDPA backend alone, for every dtype and head_dim the sweep uses, on both cards
+(`results/kaggle_t4_probe.log`, `results/kaggle_p100_probe.log`). Identical on
+the T4 and the P100:
+
+| dtype | head_dim | flash | efficient | math |
+|---|---|---|---|---|
+| fp32 | 8 / 32 / 64 / 128 / 256 | **no** | yes | yes |
+| fp16 | 8 / 32 / 64 / 128 / 256 | **no** | yes | yes |
+
+PyTorch's flash backend is fp16/bf16-only and, in current releases, needs sm_80+;
+the graded path is fp32 on sm_60 / sm_75 cards. **No run in this project used
+FlashAttention.** Every `scaled_dot_product_attention` call went through the
+memory-efficient backend — which is the kernel with `O(S)` memory and a fused
+softmax, i.e. the property the shape-14 result actually depends on. The name was
+wrong; the mechanism was not. It also means the T4-over-P100 gain is compilation
+plus hardware, not a different attention kernel.
 
 ### fp16 is twice as fast, and we still ship fp32
 
@@ -167,8 +187,8 @@ vram free=16.64/17.06 GB | baseline scores would be 20.5 TB -> infeasible
 full S=100000: median=293376.9 ms | 10,907 tok/s | peak_vram=14.61 GB | chunk_bs=1
 ```
 
-293 s per forward over 3.2 M tokens, peak 14.6 GB. On a **T4**, where SDPA gets
-its real FlashAttention backend, the same forward takes **204 s at 15,676 tok/s**
+293 s per forward over 3.2 M tokens, peak 14.6 GB. On a **T4** — same memory-efficient SDPA backend, but its fp16 tensor cores now
+carry the natively-fp16 matmuls — the same forward takes **204 s at 15,676 tok/s**
 with a 14.58 GB peak — on a card that has only 15.64 GB in total, tighter than the
 P100's 17.06 GB, and it still fits (`results/kaggle_t4_shape14.log`). Correctness is validated at a
 truncated `seq_len` where the baseline *can* run (PASS, `max_abs 1.2e-6`); SDPA's
@@ -185,11 +205,11 @@ Note this is a **native fp16 run** (the driver casts the whole model and input),
 not the `T3_AUTOCAST` knob — that knob deliberately disables itself whenever the
 incoming dtype is not fp32.
 
-Two caveats we would rather state than hide: the P100 is `sm_60`, so it gets
-neither the real FlashAttention kernel (SDPA falls back to the memory-efficient
-backend) nor `torch.compile` (Triton needs sm>=7.0). Every speedup above is
-therefore **from SDPA alone**; a T4/A100 with compilation enabled would be
-higher. See `report/figures/`.
+One caveat we would rather state than hide: the P100 is `sm_60`, so it gets no
+`torch.compile` (Triton needs sm>=7.0); every P100 speedup is **from SDPA alone**.
+The attention kernel is the same memory-efficient one on both cards — PyTorch's
+flash backend is fp16-only and needs sm_80+, so neither GPU could run it (probe
+below). See `report/figures/`.
 
 ## Ablation
 
@@ -201,7 +221,17 @@ ablation and the delivered path are literally the same code. The measured
 Shipped defaults are `T3_AUTOCAST=off`, `T3_COMPILE=auto`: SDPA, plus
 compilation wherever a first-forward timing on the real input says it wins.
 On the T4 that was 7 of the 11 shapes small enough to tune; eager won shapes
-5, 8, 11 and 12, and shape 12 gained 15% for it (1.971x -> 2.271x). Pass `--out` so a stage run does not
+5, 8, 11 and 12, and shape 12 gained 15% for it (1.971x -> 2.271x).
+
+**Fused QKV projection (`T3_FUSED_QKV=1`), measured and declined.** One `[3D, D]`
+GEMM instead of three `[D, D]` ones: two fewer launches and the activation read
+once. On the T4: median 2.387x against 2.280x, but that is one shape (the
+median element) moving inside run-to-run noise; the mean is flat (2.490x vs
+2.494x), 8 shapes better and 5 worse by amounts the small shapes
+swing between identical runs, and shape 6 — where reading the activation once
+should pay most — did not move. The likely reason is that the efficient
+attention backend re-copies the strided q/k/v views the split produces, handing
+back the reads the fusion saved. Flag kept, off (`results/results_t4_qkv.csv`). Pass `--out` so a stage run does not
 overwrite the committed `results/results.csv`:
 
 ```bash
@@ -317,7 +347,9 @@ path is the one that is faster.
 - The fused bias+GELU epilogue kernel was scoped and not built; Inductor
   already fuses it. The fused add+LayerNorm kernel **was** built and measured —
   see below — and is off by default for a reason we can name.
-- A hand-written Turing FlashAttention kernel is out of scope (multi-day effort).
+- A hand-written attention kernel for Turing (fp16 storage, fp32 accumulation) is
+  out of scope (multi-day effort); it is also the only thing that could open the
+  precision middle ground measured above.
 - **`--dtype bfloat16` fails, and not because of us.** The harness accepts it
   (`run_all.py --dtype bfloat16`), and we do fail it: 6131/131072 elements,
   `max_abs 0.047`. But so does the *reference compared against itself* recomputed

@@ -92,7 +92,7 @@ The only stage with a binary outcome rather than a ratio.
 | baseline (explicit `[B,H,S,S]` scores) | cannot run — needs ~20.5 TB |
 | SDPA + chunks collected into a list + `torch.cat` | **OOM** at the concat: `Tried to allocate 6.10 GiB` |
 | SDPA + chunks written into a preallocated output | **runs**: 293377 ms, 10,907 tok/s, peak 14.61 GB, `chunk_bs=1` (P100) |
-| the same, on a T4 with the real FlashAttention backend | **runs faster**: 204132 ms, 15,676 tok/s, peak 14.58 GB — on a card with only 15.64 GB total |
+| the same, on a T4 (same backend; fp16 tensor cores for the natively-fp16 matmuls) | **runs faster**: 204132 ms, 15,676 tok/s, peak 14.58 GB — on a card with only 15.64 GB total |
 
 The concat was the whole difference. Collecting 32 chunks and joining them holds
 the pieces and the `[32,100000,1024]` result at the same time — a second ~6.5 GB
@@ -170,6 +170,25 @@ fixed-compile run it replaced: `results_t4_compile_on.csv`. Median 2.280x agains
 2.282x fixed — unchanged within noise — but no shape got worse, and shape 12
 recovered the 15% the ablation predicted.
 
+## Fused QKV projection: measured, a wash
+
+`T3_FUSED_QKV=1` replaces the three `[D, D]` projections with one `[3D, D]` GEMM
+(two fewer launches, the activation read once; the concatenated weight is a plain
+attribute, never in `state_dict`). On the T4 (`results_t4_qkv.csv`,
+`kaggle_t4_qkv_run.log`):
+
+| | shipped | fused QKV |
+|---|---|---|
+| median | 2.280x | 2.387x |
+| mean | 2.494x | 2.490x |
+| shapes better / worse | — | 8 / 5 |
+
+The median moves because its element (shape 1) moved; the mean does not. Shape 6,
+where a single read of a 1.28M-row activation should pay most, is flat. The
+likely reason is that the memory-efficient attention backend makes its own
+contiguous copies of the strided q/k/v views that the split produces, so the
+reads the fusion saved are spent again one kernel later. Off by default.
+
 ## Cross-GPU: what the hardware is worth
 
 The same code on two free cards, both fp32, both 13/13 PASS:
@@ -177,12 +196,13 @@ The same code on two free cards, both fp32, both 13/13 PASS:
 | | Tesla P100 (sm_60) | Tesla T4 (sm_75) |
 |---|---|---|
 | `torch.compile` | unavailable (Triton needs sm>=7.0) | autotuned per shape: compiled on 7 of 11 tuned, eager on 5/8/11/12 |
-| SDPA backend | memory-efficient | FlashAttention |
+| SDPA backend | memory-efficient | memory-efficient (same kernel: flash needs fp16 and sm_80+, probed) |
 | median speedup | 2.065x | **2.280x** |
 | range | 1.098x - 4.001x | 1.090x - 4.541x |
 
 Note the T4's *baselines* are slower than the P100's (shape 13: 317.9 ms vs
 168.6 ms) — the P100 has higher fp32 throughput and roughly twice the memory
 bandwidth. The ratio improves on the T4 anyway, because our path picks up
-compile and FlashAttention there while the baseline stays bandwidth-bound. The
+compile there while the baseline stays bandwidth-bound; the attention kernel is
+identical on both cards. The
 speedup is a ratio, and it is worth saying which way each side of it moved.

@@ -26,6 +26,9 @@ logs/
 !results/kaggle_t4_triton_e2e.log
 !results/kaggle_t4_auto_run.log
 !results/kaggle_t4_mixed_run.log
+!results/kaggle_p100_probe.log
+!results/kaggle_t4_probe.log
+!results/kaggle_t4_qkv_run.log
 .DS_Store
 .kaggle_upload/
 .kaggle_out*/

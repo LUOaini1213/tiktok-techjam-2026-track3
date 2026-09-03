@@ -330,7 +330,7 @@
   </figure>
 
   <div class="col">
-    <p><code>F.scaled_dot_product_attention</code> never materializes that matrix. Same
+    <p><code>F.scaled_dot_product_attention</code> (memory-efficient backend) never materializes that matrix. Same
     mathematics, <code>O(S)</code> memory instead of <code>O(S&sup2;)</code>. On the graded hot
     path there is no padding, so causality goes through <code>is_causal=True</code> with
     <code>attn_mask=None</code> and the mask is generated inside the kernel &mdash; which is the
@@ -360,8 +360,7 @@
 
     <p><strong>Result on a free 16&nbsp;GB P100:</strong> the full-length forward completes in
     293&nbsp;s at 10,907&nbsp;tokens/s, peaking at 14.61&nbsp;GB of a 17.06&nbsp;GB card, with
-    <code>chunk_bs=1</code>. On a <strong>T4</strong>, where SDPA reaches its real
-    FlashAttention backend, the same forward takes <strong>204&nbsp;s at
+    <code>chunk_bs=1</code>. On a <strong>T4</strong> &mdash; same memory-efficient backend, but its fp16 tensor cores carry the natively-fp16 matmuls &mdash; the same forward takes <strong>204&nbsp;s at
     15,676&nbsp;tokens/s</strong> at a 14.58&nbsp;GB peak &mdash; on a card holding only
     15.64&nbsp;GB in total, tighter than the P100, and it still fits.</p>
 
@@ -424,8 +423,7 @@
   <div class="col">
     <p>Kaggle's API hands out a Tesla P100 unless <code>machine_shape</code> asks otherwise. That
     card is <code>sm_60</code>: Triton will not build, so <code>torch.compile</code> never
-    engages, and SDPA falls back to its memory-efficient backend rather than FlashAttention.
-    Asking for <code>NvidiaTeslaT4</code> lights up the full stack.</p>
+    engages. Asking for <code>NvidiaTeslaT4</code> turns compilation on. The attention kernel is the same on both cards: PyTorch's flash backend is fp16-only and needs sm_80+, and a probe forcing each backend alone (<code>results/kaggle_t4_probe.log</code>, <code>results/kaggle_p100_probe.log</code>) finds <em class="term">flash = no</em> for every dtype and head dimension on both GPUs. No run here used FlashAttention; every call used the memory-efficient backend &mdash; the <code>O(S)</code>-memory kernel shape 14 actually depends on.</p>
   </div>
 
   <div class="tablewrap">
@@ -461,8 +459,7 @@
     <span class="label">A ratio has two sides</span>
     <p>The T4's <em class="term">baselines</em> are slower than the P100's &mdash; 316.8&nbsp;ms
     against 168.6&nbsp;ms on shape 13. The P100 has more fp32 throughput and roughly twice the
-    memory bandwidth. Our ratios improve on the T4 anyway, because the optimized path gains
-    compilation and FlashAttention there while the baseline stays bandwidth-bound. Worth stating
+    memory bandwidth. Our ratios improve on the T4 anyway, because the optimized path gains compilation there while the baseline stays bandwidth-bound &mdash; the attention kernel is identical on both cards. Worth stating
     which side moved rather than banking the bigger number.</p>
   </div>
 </section>

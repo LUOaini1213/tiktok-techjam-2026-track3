@@ -58,7 +58,7 @@ https://github.com/LUOaini1213/tiktok-techjam-2026-track3
 ## 7. Built with（技术标签，共 24 个，逗号分隔粘贴）
 
 ```
-python, pytorch, cuda, triton, flash-attention, scaled-dot-product-attention, torch-compile, torch-inductor, cuda-graphs, gpu, kernel-optimization, mixed-precision, fp16, memory-optimization, transformer, attention, kaggle, tesla-t4, tesla-p100, matplotlib, pillow, edge-tts, moviepy, claude-code
+python, pytorch, cuda, triton, memory-efficient-attention, scaled-dot-product-attention, torch-compile, torch-inductor, cuda-graphs, gpu, kernel-optimization, mixed-precision, fp16, memory-optimization, transformer, attention, kaggle, tesla-t4, tesla-p100, matplotlib, pillow, edge-tts, moviepy, claude-code
 ```
 
 ---
@@ -128,7 +128,7 @@ inside the tolerance gate.
 
 Three levers, each selectable by environment variable with no code edits, so the ablation and the delivered path are literally the same code:
 
-1. **`F.scaled_dot_product_attention`** — $O(S)$ memory instead of the baseline's $O(S^2)$. The score matrix is never built. Causality goes through `is_causal=True`, generated inside the kernel, because a dense $[S,S]$ mask at $S = 10^5$ is $10^{10}$ bytes on its own.
+1. **`F.scaled_dot_product_attention`** (memory-efficient backend) — $O(S)$ memory instead of the baseline's $O(S^2)$. The score matrix is never built. Causality goes through `is_causal=True`, generated inside the kernel, because a dense $[S,S]$ mask at $S = 10^5$ is $10^{10}$ bytes on its own.
 2. **Self-applied `torch.compile`** — the model compiles itself on the first forward, so the speedup does not depend on the grader passing `--compile-user`. Requires $\text{sm} \ge 7.0$.
 3. **VRAM-planned batch chunking** — the chunk size is solved for at runtime rather than tuned:
 
@@ -150,9 +150,9 @@ $$2 \cdot 32 \cdot 10^5 \cdot 1024 \cdot 4\ \text{bytes} \;=\; 26.2\ \text{GB} \
 
 committed before a single activation. Correctness for shape 14 is therefore established separately, in **fp32**, at a truncated $S$ where the reference still fits — PASS at `max_abs` $= 1.19\times10^{-6}$ — and SDPA's mathematics does not depend on $S$.
 
-**2. The Kaggle API silently gives you the wrong GPU.** `torch.compile`, real FlashAttention and fp16 tensor cores were all marked "not measured" for most of this project, because the API-allocated card is a Tesla **P100** (`sm_60`) where Triton will not build. The kernels API *does* let you choose — `machine_shape` / `--accelerator` — but the accepted values (`NvidiaTeslaT4`, `NvidiaTeslaP100`, `Tpu1VmV38`) appear only in the SDK docstring for `ApiSaveKernelRequest`, and **anything unrecognised is silently normalised back to a P100**. Our first two guesses looked like successful requests and were not. We confirmed the right one by pushing a throwaway kernel that printed `get_device_name`.
+**2. The Kaggle API silently gives you the wrong GPU.** `torch.compile` and fp16 tensor cores were both marked "not measured" for most of this project, because the API-allocated card is a Tesla **P100** (`sm_60`) where Triton will not build. The kernels API *does* let you choose — `machine_shape` / `--accelerator` — but the accepted values (`NvidiaTeslaT4`, `NvidiaTeslaP100`, `Tpu1VmV38`) appear only in the SDK docstring for `ApiSaveKernelRequest`, and **anything unrecognised is silently normalised back to a P100**. Our first two guesses looked like successful requests and were not. We confirmed the right one by pushing a throwaway kernel that printed `get_device_name`.
 
-**3. Two GPUs make an accidental ablation.** The same code scores 2.065× on the P100 (SDPA alone) and 2.280× on the T4 (SDPA + FlashAttention + autotuned compile). Worth stating plainly: the T4's *baselines* are **slower** than the P100's — 318.7 ms against 168.6 ms on shape 13 — because the P100 has more fp32 throughput and roughly twice the memory bandwidth. Our ratio improves on the T4 anyway, because the optimized path gains compilation and FlashAttention there while the baseline stays bandwidth-bound. A speedup is a ratio, and it matters which side moved.
+**3. Two GPUs make an accidental ablation.** The same code scores 2.065× on the P100 (SDPA alone) and 2.280× on the T4 (SDPA + autotuned compile). Worth stating plainly: the T4's *baselines* are **slower** than the P100's — 318.7 ms against 168.6 ms on shape 13 — because the P100 has more fp32 throughput and roughly twice the memory bandwidth. Our ratio improves on the T4 anyway, because the optimized path gains compilation there while the baseline stays bandwidth-bound. A speedup is a ratio, and it matters which side moved. One more correction we owe: earlier drafts credited the T4 with "FlashAttention". We probed every SDPA backend for every dtype and head dimension on both cards, and **flash was never available** — it is fp16-only and needs sm_80+. Every run used the memory-efficient backend, whose $O(S)$ memory is the property shape 14 depends on. Right mechanism, wrong name, now fixed.
 
 **4. We wrote the kernel, and it lost where it counted.** The track is named "implement a GPU kernel", so composing `scaled_dot_product_attention` with `torch.compile` — however well measured — leaves an obvious gap. `kernels/fused_layernorm.py` closes it: a fused **residual-add + LayerNorm** in Triton. The target was picked on purpose. `nn.LayerNorm` alone is already a tuned CUDA kernel and rewriting it is a predictable loss; what eager PyTorch does *not* fuse is the pre-norm pattern a block repeats twice per layer, $x = x + \mathrm{sublayer}(\mathrm{norm}(x))$, where the add and the norm each traverse the full $[B, S, D]$ activation. Fusing them takes four passes down to two.
 
@@ -228,7 +228,7 @@ over near-zero references — and why a `max_abs` of $2.04\times10^{-3}$ is disq
 
 ## What's next
 
-A kernel that fuses *more* than Inductor is willing to — the add, the LayerNorm, *and* the following projection's input cast in one pass — since matching the compiler's own fusion of two ops turned out not to be enough to beat it. The fused bias+GELU epilogue was scoped and dropped, since Inductor already fuses it; a Turing-specific FlashAttention kernel is a multi-day effort we scoped and did not attempt. The padded fallback still materializes a dense $[B,1,S,S]$ bias, giving back exactly the $O(S^2)$ memory SDPA exists to avoid; the graded path never takes it, but making it memory-efficient is unfinished work rather than a solved problem.
+A kernel that fuses *more* than Inductor is willing to — the add, the LayerNorm, *and* the following projection's input cast in one pass — since matching the compiler's own fusion of two ops turned out not to be enough to beat it. The fused bias+GELU epilogue was scoped and dropped, since Inductor already fuses it; a Turing attention kernel with fp16 storage and fp32 accumulation is a multi-day effort we scoped and did not attempt. The padded fallback still materializes a dense $[B,1,S,S]$ bias, giving back exactly the $O(S^2)$ memory SDPA exists to avoid; the graded path never takes it, but making it memory-efficient is unfinished work rather than a solved problem.
 
 The mixed assignment — fp16 attention, fp32 FFN and LayerNorm — turned out to be measurable in time, and it is not the middle ground it looks like: $2.953\times$ at a worst error of $1.72e-03$, a margin of $1.17\times$. Moving everything *after* the attention to fp32 recovered almost nothing, which locates the error floor inside the fp16 attention matmuls themselves. A real middle ground needs fp16 storage with fp32 accumulation *inside* the attention kernel, which the SDPA fp16 path does not expose — that is the kernel we would write next.
 

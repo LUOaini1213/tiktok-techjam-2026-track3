@@ -31,7 +31,7 @@ shape 14 at all; only a memory-efficient (FlashAttention-style) attention with
 
 ## 4. Optimizations
 
-1. **SDPA / FlashAttention.** `F.scaled_dot_product_attention(is_causal=True,
+1. **SDPA, memory-efficient backend.** `F.scaled_dot_product_attention(is_causal=True,
    attn_mask=None)` on the no-padding hot path. `O(S)` memory, fused softmax,
    tensor-core matmuls. Unlocks shape 14 and wins big on long-sequence shape 13.
 2. **Internal fp16 autocast under fp32 grading.** Tensor cores on the T4 (which
@@ -83,8 +83,9 @@ Two things in that table are worth stating rather than glossing:
 **The T4's baselines are slower than the P100's** (shape 13: 317.9 ms vs
 168.6 ms; shape 6: 1436.3 ms vs 772.3 ms). The P100 has higher fp32 throughput
 and roughly twice the memory bandwidth. Our ratios improve on the T4 anyway,
-because the optimized path gains `torch.compile` and the real FlashAttention
-backend there while the baseline stays bandwidth-bound. A speedup is a ratio and
+because the optimized path gains `torch.compile` there while the baseline stays
+bandwidth-bound — the attention kernel is the same memory-efficient one on both
+cards (see the probe below). A speedup is a ratio and
 it matters which side moved.
 
 **fp16 is nearly twice as fast and we do not ship it.** `T3_AUTOCAST=fp16`
@@ -99,6 +100,20 @@ measured flag. This is the one place where our earlier reasoning was wrong: the
 repo previously asserted fp16 "breaks the gate", which measurement disproved --
 the conclusion survived, the justification did not.
 
+**Which attention kernel ran.** Earlier drafts said FlashAttention. Forcing each
+SDPA backend alone, for every dtype and head_dim in the sweep, on both cards
+(`results/kaggle_t4_probe.log`, `results/kaggle_p100_probe.log`):
+
+| dtype | head_dim | flash | efficient | math |
+|---|---|---|---|---|
+| fp32 | 8 / 32 / 64 / 128 / 256 | **no** | yes | yes |
+| fp16 | 8 / 32 / 64 / 128 / 256 | **no** | yes | yes |
+
+PyTorch's flash backend is fp16/bf16-only and needs sm_80+; the graded path is fp32
+on sm_60 / sm_75. No run here used FlashAttention. Every call used the
+memory-efficient backend, which is the `O(S)`-memory fused kernel the shape-14
+result depends on — the mechanism was right and the name was not.
+
 **Shape 14 is the result we care most about.** The baseline needs ~20.5 TB for
 its scores and cannot run, so there is no ratio to report; the meaningful claim
 is that the shape goes from impossible to possible. Measured on the same free
@@ -111,7 +126,8 @@ full S=100000: median=293376.9 ms | 10,907 tok/s | peak_vram=14.61 GB | chunk_bs
 ```
 
 293 s per forward across 3.2 M tokens, peak 14.61 GB of the 17.06 GB card. On a
-**T4**, where SDPA gets its real FlashAttention backend, the same forward takes
+**T4** — same memory-efficient backend, but fp16 tensor cores for the natively-fp16
+matmuls — the same forward takes
 **204 s at 15,676 tok/s** with a 14.58 GB peak — on a card with only 15.64 GB
 total, tighter than the P100, and it still fits
 (`results/kaggle_t4_shape14.log`).
@@ -138,6 +154,10 @@ Figures: `figures/memory_wall.png` (the 20.5 TB wall), `figures/speedups.png`
   So is the mixed assignment (fp16 attention, fp32 FFN and LayerNorm): 2.953x at
   `max_abs` 1.72e-03, margin 1.17x. The error floor sits in the fp16 attention
   matmuls, so there is no cheap middle ground on this axis.
+- Fused QKV projection, measured and declined: median 2.387x vs 2.280x is one
+  shape moving inside noise; the mean is flat (2.490x vs 2.494x) and shape 6,
+  where it should pay most, did not move — the efficient backend most likely
+  re-copies the strided q/k/v views and gives back the saved reads.
 - `--dtype bfloat16` fails the accuracy gate. This is a property of the
   configuration rather than of our kernel: the reference compared against itself
   recomputed in fp32 fails identically (7603 vs our 6131 elements, same
@@ -157,7 +177,8 @@ Figures: `figures/memory_wall.png` (the 20.5 TB wall), `figures/speedups.png`
   the compiler and did not beat it; it stays **off by default** with every number
   published.
 - The fused bias+GELU epilogue was scoped and not built; Inductor already fuses
-  it. A Turing-specific FlashAttention kernel remains a multi-day effort.
+  it. A hand-written attention kernel for Turing (fp16 storage, fp32 accumulation)
+  remains a multi-day effort, and is the only route to the precision middle ground.
 
 ## 7. Reproducibility
 

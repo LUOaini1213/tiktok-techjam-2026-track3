@@ -1,5 +1,11 @@
 # 3-minute demo video script — Track 3
 
+> **Correction after upload.** The narration in the uploaded cut says "FlashAttention". A backend
+> probe later showed neither GPU could run PyTorch's flash kernel (fp16-only, sm_80+); every run
+> used SDPA's memory-efficient backend. Same O(S) memory, wrong name. The script below is corrected;
+> the video was not re-cut.
+
+
 > **The delivered video is generated, not hand-edited.** `scripts/make_video.py`
 > renders the slides from `results/*.csv`, synthesizes the narration, and holds
 > each slide for exactly as long as its own voice-over runs — so re-running it
@@ -29,7 +35,7 @@ matrix — that's 32·16·100000·100000, about 20.5 **terabytes**. No GPU can h
 it. So the baseline literally cannot run this shape." (Show `memory_wall.png`.)
 
 **0:50–1:25 — Our fix runs it.**
-"We reformulate attention with scaled_dot_product_attention — FlashAttention —
+"We reformulate attention with scaled_dot_product_attention — the memory-efficient fused kernel —
 which never materializes that matrix. Same math, O(S) memory. On a free cloud
 GPU — a 16 GB P100 — shape 14 runs: 293 seconds per forward, about 11,000 tokens
 a second, peaking at 14.6 gigabytes. That run is fp16, and for this shape that

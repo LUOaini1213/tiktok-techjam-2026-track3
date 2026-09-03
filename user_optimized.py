@@ -10,8 +10,8 @@ keeping every submodule and parameter name identical, so the harness'
 
 Optimization levers (all numerically equivalent within the harness tolerance
 atol=0.002 OR rtol=0.02, checked per-element):
-  1. Attention via ``F.scaled_dot_product_attention`` (FlashAttention /
-     memory-efficient kernel) -> O(S) memory instead of the baseline's
+  1. Attention via ``F.scaled_dot_product_attention`` (memory-efficient fused kernel;
+     PyTorch's flash backend is fp16-only and needs sm_80+, so it never ran here) -> O(S) memory instead of the baseline's
      O(S^2) materialized score matrix. This is what makes the seq_len=100000
      shape possible at all (the baseline would need ~20.5 TB for its scores).
   2. Internal fp16 autocast even when the grader runs float32 -> lights up the
