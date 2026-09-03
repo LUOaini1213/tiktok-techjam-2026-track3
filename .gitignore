@@ -32,6 +32,8 @@ logs/
 !results/kaggle_t4_graph_run.log
 !results/kaggle_t4_attn_v1.log
 !results/kaggle_t4_attn_v2.log
+!results/kaggle_t4_attn_v3.log
+!results/kaggle_t4_attn_sweep.log
 .DS_Store
 .kaggle_upload/
 .kaggle_out*/
