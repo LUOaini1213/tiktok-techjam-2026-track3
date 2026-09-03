@@ -1,0 +1,29 @@
+name: cpu-smoke
+
+# Correctness of the optimized forward against the reference, on CPU, for
+# every graded shape plus the padded fallback and the chunked path. Speed
+# needs a GPU and lives in the Kaggle logs under results/; this only asks
+# whether the answer moved.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install CPU torch
+        run: pip install --index-url https://download.pytorch.org/whl/cpu torch
+      - name: Shapes 1-13 + padded fallback (shipped defaults)
+        run: python scripts/smoke_cpu.py
+      - name: Chunked output path and every opt-in flag still exact
+        run: |
+          T3_CHUNK_BS=3 python scripts/smoke_cpu.py
+          T3_FUSED_QKV=1 python scripts/smoke_cpu.py
+          T3_TRITON=1 T3_ATTN=triton python scripts/smoke_cpu.py
