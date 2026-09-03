@@ -27,8 +27,8 @@ Ablation / robustness toggles via environment variables (see README):
   T3_AUTOCAST   = auto | fp16 | bf16 | off      (default off; see _plan)
   T3_COMPILE    = auto | 1 | 0                   (default auto: time eager vs compiled
                                                   once, on the real input, keep the winner)
-  T3_CUDAGRAPH  = 1 | 0                          (default 0; capture the eager path into a
-                                                  CUDA graph as a third autotune candidate)
+  T3_CUDAGRAPH  = 1 | 0                          (default 1; the eager path captured into a
+                                                  CUDA graph is a third autotune candidate)
   T3_COMPILE_MODE = default | reduce-overhead | max-autotune  (override)
   T3_FP32_FFN   = 1 | 0                          (default 0; force FFN+LN fp32)
   T3_CHUNK_BS   = <int>                          (override batch chunk size)
@@ -95,7 +95,7 @@ class UserOptimizedTransformer(BaselineTransformer):
         # same kernels with none of it, and without the Inductor guard/dispatch
         # cost that made reduce-overhead lose on those shapes. It enters the
         # first-forward autotune as a third candidate and is kept only if it wins.
-        self._cudagraph = _env_flag("T3_CUDAGRAPH", False)
+        self._cudagraph = _env_flag("T3_CUDAGRAPH", True)
         self._graph = None
         self._g_x = self._g_m = self._g_out = None
         self._g_key = None

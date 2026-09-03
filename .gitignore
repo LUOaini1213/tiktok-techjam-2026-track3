@@ -29,6 +29,7 @@ logs/
 !results/kaggle_p100_probe.log
 !results/kaggle_t4_probe.log
 !results/kaggle_t4_qkv_run.log
+!results/kaggle_t4_graph_run.log
 .DS_Store
 .kaggle_upload/
 .kaggle_out*/

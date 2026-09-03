@@ -26,7 +26,7 @@ ExactSwap — Drop-in GPU Transformer Layer
 ## 3. Elevator pitch（一句话简介，199 字符）
 
 ```
-A drop-in Transformer layer that is 2.28x faster across all 13 graded shapes while staying 1049x inside the tolerance gate — and runs the 100,000-token shape whose reference needs 20.5 TB and cannot.
+A drop-in Transformer layer that is 2.29x faster across all 13 graded shapes while staying 1049x inside the tolerance gate — and runs the 100,000-token shape whose reference needs 20.5 TB and cannot.
 ```
 
 ---
@@ -118,7 +118,7 @@ No GPU holds that. The baseline does not run *slowly* on shape 14 — it does no
 
 **ExactSwap** is a drop-in replacement for the reference `BaselineTransformer`. It subclasses it, keeps every submodule and parameter name, and rewrites only the forward compute — so the official `copy_model_weights(..., strict=True)` succeeds and the comparison is apples to apples.
 
-**On a free Kaggle Tesla T4 under fp32 grading: 13/13 gradeable shapes PASS, median speedup 2.280× (range 1.090×–4.541×), worst absolute error $1.91\times10^{-6}$.** That is a factor of
+**On a free Kaggle Tesla T4 under fp32 grading: 13/13 gradeable shapes PASS, median speedup 2.286× (range 1.094×–4.436×), worst absolute error $1.91\times10^{-6}$.** That is a factor of
 
 $$\frac{0.002}{1.91 \times 10^{-6}} \approx 1049$$
 
@@ -152,7 +152,7 @@ committed before a single activation. Correctness for shape 14 is therefore esta
 
 **2. The Kaggle API silently gives you the wrong GPU.** `torch.compile` and fp16 tensor cores were both marked "not measured" for most of this project, because the API-allocated card is a Tesla **P100** (`sm_60`) where Triton will not build. The kernels API *does* let you choose — `machine_shape` / `--accelerator` — but the accepted values (`NvidiaTeslaT4`, `NvidiaTeslaP100`, `Tpu1VmV38`) appear only in the SDK docstring for `ApiSaveKernelRequest`, and **anything unrecognised is silently normalised back to a P100**. Our first two guesses looked like successful requests and were not. We confirmed the right one by pushing a throwaway kernel that printed `get_device_name`.
 
-**3. Two GPUs make an accidental ablation.** The same code scores 2.065× on the P100 (SDPA alone) and 2.280× on the T4 (SDPA + autotuned compile). Worth stating plainly: the T4's *baselines* are **slower** than the P100's — 318.7 ms against 168.6 ms on shape 13 — because the P100 has more fp32 throughput and roughly twice the memory bandwidth. Our ratio improves on the T4 anyway, because the optimized path gains compilation there while the baseline stays bandwidth-bound. A speedup is a ratio, and it matters which side moved. One more correction we owe: earlier drafts credited the T4 with "FlashAttention". We probed every SDPA backend for every dtype and head dimension on both cards, and **flash was never available** — it is fp16-only and needs sm_80+. Every run used the memory-efficient backend, whose $O(S)$ memory is the property shape 14 depends on. Right mechanism, wrong name, now fixed.
+**3. Two GPUs make an accidental ablation.** The same code scores 2.065× on the P100 (SDPA alone) and 2.286× on the T4 (SDPA + first-forward autotune). Worth stating plainly: the T4's *baselines* are **slower** than the P100's — 318.7 ms against 168.6 ms on shape 13 — because the P100 has more fp32 throughput and roughly twice the memory bandwidth. Our ratio improves on the T4 anyway, because the optimized path gains compilation there while the baseline stays bandwidth-bound. A speedup is a ratio, and it matters which side moved. One more correction we owe: earlier drafts credited the T4 with "FlashAttention". We probed every SDPA backend for every dtype and head dimension on both cards, and **flash was never available** — it is fp16-only and needs sm_80+. Every run used the memory-efficient backend, whose $O(S)$ memory is the property shape 14 depends on. Right mechanism, wrong name, now fixed.
 
 **4. We wrote the kernel, and it lost where it counted.** The track is named "implement a GPU kernel", so composing `scaled_dot_product_attention` with `torch.compile` — however well measured — leaves an obvious gap. `kernels/fused_layernorm.py` closes it: a fused **residual-add + LayerNorm** in Triton. The target was picked on purpose. `nn.LayerNorm` alone is already a tuned CUDA kernel and rewriting it is a predictable loss; what eager PyTorch does *not* fuse is the pre-norm pattern a block repeats twice per layer, $x = x + \mathrm{sublayer}(\mathrm{norm}(x))$, where the add and the norm each traverse the full $[B, S, D]$ activation. Fusing them takes four passes down to two.
 
@@ -193,7 +193,7 @@ $$0.02\,|r_i| \;\ge\; 2.0388\times10^{-3} \quad\Longrightarrow\quad |r_i| \;\ge\
 
 — that element happened to have a large enough reference value. Nothing makes that repeatable: put the same error on a near-zero reference and the element fails, and one failing element forfeits the shape. The trade is therefore
 
-$$\underbrace{2\times \text{ speed}}_{\text{4.014}\times\text{ vs }2.280\times} \quad\text{for}\quad \underbrace{\frac{0.002}{2.0388\times10^{-3}} \approx 0.98}_{\text{margin, i.e. none}} \quad\text{instead of}\quad 1049$$
+$$\underbrace{2\times \text{ speed}}_{\text{4.014}\times\text{ vs }2.286\times} \quad\text{for}\quad \underbrace{\frac{0.002}{2.0388\times10^{-3}} \approx 0.98}_{\text{margin, i.e. none}} \quad\text{instead of}\quad 1049$$
 
 We took the margin and left fp16 as a documented, measured flag. **The conclusion was right and the reasoning behind it was wrong, and only running it revealed which.**
 
@@ -223,7 +223,7 @@ over near-zero references — and why a `max_abs` of $2.04\times10^{-3}$ is disq
 - **A memory bug can surface one line away from its cause.** The OOM appeared in the attention and lived in the concat.
 - **Cheap infrastructure facts dominate expensive optimization work.** One undocumented string, `NvidiaTeslaT4`, was worth more than any kernel change we made: it unlocked three levers at once.
 - **Audit your own claims adversarially.** Four of ours were wrong, and all four had survived several careful re-readings by the people who wrote them.
-- **Measure the compiler too.** The ablation showed `torch.compile` losing on the launch-bound shape, so the shipped model times eager against compiled once per shape, inside warmup, and keeps the winner. Eager won on four shapes; shape 12 gained 15% ($1.971\times \to 2.271\times$). The median did not move, and that is the point: it stopped being a guess.
+- **Measure the compiler too.** The ablation showed `torch.compile` losing on the launch-bound shape, so the shipped model times eager, compiled, and the eager kernels captured into a CUDA graph once per shape, inside warmup, and keeps the fastest. Eager won on four shapes; shape 12 gained 15% ($1.971\times \to 2.271\times$). The median did not move, and that is the point: it stopped being a guess.
 - **A faster operator is not a faster program.** Our kernel beat Inductor's fusion at the operator level and lost end to end twice: first because switching it on switched compilation off, then — after we fixed that — because a custom op is a boundary the compiler cannot fuse across. The unit you benchmark has to be the unit you ship.
 
 ## What's next
@@ -257,7 +257,7 @@ The mixed assignment — fp16 attention, fp32 FFN and LayerNorm — turned out t
 
 | 数字 | 来源 |
 |---|---|
-| T4 中位 2.280× / 13-13 PASS(autotune 默认) | `results/results_t4.csv`、`results/kaggle_t4_auto_run.log` |
+| T4 中位 2.286× / 13-13 PASS(autotune 默认,含 CUDA-graph 候选) | `results/results_t4.csv`、`results/kaggle_t4_graph_run.log` |
 | T4 固定开启 compile 的对照 2.282× | `results/results_t4_compile_on.csv`、`results/kaggle_t4_run.log` |
 | P100 中位 2.065× | `results/results.csv`、`results/kaggle_p100_run.log` |
 | shape 14：204 s / 15,676 tok/s / 14.58 GB | `results/kaggle_t4_shape14.log` |
