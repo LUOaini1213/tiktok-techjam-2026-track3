@@ -8,3 +8,11 @@ from .fused_layernorm import (  # noqa: F401
     fused_add_layernorm,
     fused_layernorm_module,
 )
+
+from .attention import (  # noqa: F401
+    HAVE_ATTN_OP,
+    MAX_HEAD_DIM,
+    attention as triton_attention,
+    attention_raw,
+    can_use as can_use_attention,
+)

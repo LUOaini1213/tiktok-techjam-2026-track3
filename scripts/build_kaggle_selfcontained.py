@@ -76,7 +76,7 @@ def build_selector(only, extra_env):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", default="all",
-                    choices=["all", "1-13", "14", "ablation", "triton", "probe"],
+                    choices=["all", "1-13", "14", "ablation", "triton", "probe", "attn"],
                     help="which section of the sweep the kernel runs (default: all)")
     ap.add_argument("--id", default="wenjiluo/track3-bench",
                     help="Kaggle kernel id to push to")
@@ -105,6 +105,8 @@ def main():
     # rewritten to point at the names that inlining leaves in scope.
     tk = read(os.path.join("kernels", "fused_layernorm.py"))
     tk = tk.replace("from __future__ import annotations", "")
+    ta = read(os.path.join("kernels", "attention.py"))
+    ta = ta.replace("from __future__ import annotations", "")
 
     uo = read("user_optimized.py")
     uo = uo.replace("from __future__ import annotations\n", "")
@@ -122,6 +124,8 @@ except Exception:  # the package is optional; the model works without it
         bench
         + "\n\n# ====== kernels/fused_layernorm.py (inlined) ======\n\n"
         + tk
+        + "\n\n# ============ kernels/attention.py (inlined) ============\n\n"
+        + ta
         + "\n\n# ================= user_optimized.py (inlined) =================\n\n"
         + uo
         + "\n\n# ================= sweep driver =================\n\n"

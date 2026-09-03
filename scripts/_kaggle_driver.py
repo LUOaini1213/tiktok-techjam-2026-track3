@@ -295,6 +295,105 @@ def _sdpa_probe(device):
           flush=True)
 
 
+
+def _attn_bench(device):
+    """Correctness against an fp64 reference, and speed against fp32 / fp16 SDPA,
+    for the tensor-core attention kernel at the sweep's real (H, S, head_dim)."""
+    import math
+    import torch
+    import torch.nn.functional as F
+    try:
+        from kernels.attention import attention_raw, attention, HAVE_TRITON as hv, HAVE_ATTN_OP as hop
+    except Exception:
+        g = globals()
+        attention_raw, attention = g.get("attention_raw"), g.get("attention")
+        hv, hop = g.get("HAVE_TRITON", False), g.get("HAVE_ATTN_OP", False)
+        if attention_raw is None:
+            print("attention kernel unavailable in this build", flush=True)
+            return
+    print(f"HAVE_TRITON={hv} HAVE_ATTN_OP={hop}", flush=True)
+
+    CASES = [
+        ("shape 1/5 B=64 H=4 S=128 hd=32", 64, 4, 128, 32),
+        ("shape 7 hd=8", 64, 4, 128, 8),
+        ("shape 9 H=1 hd=128", 64, 1, 128, 128),
+        ("shape 10 H=2 hd=64", 64, 2, 128, 64),
+        ("shape 11 H=16 hd=8", 64, 16, 128, 8),
+        ("shape 12 S=32", 64, 4, 32, 32),
+        ("shape 13 S=1024", 64, 4, 1024, 32),
+        ("shape 6 B=10000", 10000, 4, 128, 32),
+    ]
+
+    def timeit(fn, warm=10, iters=30):
+        for _ in range(warm):
+            fn()
+        torch.cuda.synchronize()
+        st = torch.cuda.Event(enable_timing=True)
+        en = torch.cuda.Event(enable_timing=True)
+        t = []
+        for _ in range(iters):
+            st.record(); fn(); en.record(); torch.cuda.synchronize()
+            t.append(st.elapsed_time(en))
+        t.sort()
+        return t[len(t) // 2]
+
+    print("ATTN: case | BxHxSxhd | sdpa32 ms | sdpa16 ms | k1 ms | k3 ms | "
+          "err sdpa32 | err sdpa16 | err k1 | err k3 | k1 vs sdpa32 | k3 vs sdpa32", flush=True)
+    for label, B, H, S, hd in CASES:
+        torch.manual_seed(0)
+        q = torch.randn(B, H, S, hd, device=device)
+        k = torch.randn(B, H, S, hd, device=device)
+        v = torch.randn(B, H, S, hd, device=device)
+        scale = 1.0 / math.sqrt(hd)
+        row = dict(err32="", err16="", e1="", e3="", t32="", t16="", t1="", t3="", s1="", s3="")
+        with torch.no_grad():
+            ref32 = F.scaled_dot_product_attention(q, k, v, is_causal=True, scale=scale)
+            big = B * H * S * S * 8 * 2 > 6e9
+            ref = ref32.double() if big else F.scaled_dot_product_attention(
+                q.double(), k.double(), v.double(), is_causal=True, scale=scale)
+            ref32_err = 0.0 if big else (ref32.double() - ref).abs().max().item()
+            o16 = F.scaled_dot_product_attention(q.half(), k.half(), v.half(),
+                                                 is_causal=True, scale=scale).float()
+            err16 = (o16.double() - ref).abs().max().item()
+            outs = {}
+            for split in (1, 3):
+                try:
+                    o = attention_raw(q, k, v, scale, True, split)
+                    torch.cuda.synchronize()
+                    outs[split] = o
+                    row[f"e{split}"] = f"{(o.double() - ref).abs().max().item():.3g}"
+                    if not torch.isfinite(o).all():
+                        row[f"e{split}"] += "(NONFINITE)"
+                except Exception as ex:
+                    row[f"e{split}"] = "FAIL:" + str(ex)[:70].replace("\n", " ").replace(",", ";")
+            t32 = timeit(lambda: F.scaled_dot_product_attention(q, k, v, is_causal=True, scale=scale))
+            qh, kh, vh = q.half(), k.half(), v.half()
+            t16 = timeit(lambda: F.scaled_dot_product_attention(qh, kh, vh, is_causal=True, scale=scale))
+            row.update(t32=f"{t32:.4f}", t16=f"{t16:.4f}", err32=f"{ref32_err:.3g}", err16=f"{err16:.3g}")
+            for split in (1, 3):
+                if split in outs:
+                    t = timeit(lambda: attention_raw(q, k, v, scale, True, split))
+                    row[f"t{split}"] = f"{t:.4f}"
+                    row[f"s{split}"] = f"{t32 / t:.3f}"
+        print(f"ATTN,{label},{B}x{H}x{S}x{hd},{row['t32']},{row['t16']},{row['t1']},{row['t3']},"
+              f"{row['err32']},{row['err16']},{row['e1']},{row['e3']},{row['s1']},{row['s3']}", flush=True)
+        del q, k, v, ref32, ref, o16, outs
+        torch.cuda.empty_cache()
+
+    # does the registered op compose with torch.compile?
+    try:
+        q = torch.randn(4, 4, 128, 32, device=device)
+        k = q.clone(); v = q.clone()
+        fn = torch.compile(lambda a, b, c: attention(a, b, c, 1.0 / math.sqrt(32), True, 3), dynamic=False)
+        with torch.no_grad():
+            o = fn(q, k, v)
+            o = fn(q, k, v)
+            ref = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        print(f"compile compose: OK  max_abs={(o - ref).abs().max().item():.3g}", flush=True)
+    except Exception as ex:
+        print("compile compose FAILED:", str(ex)[:200].replace("\n", " "), flush=True)
+
+
 def _main():
     import os
     import torch
@@ -363,6 +462,16 @@ def _main():
             except Exception:
                 pass
             torch.cuda.empty_cache()
+
+    if only == "attn":
+        print("\n##### ATTENTION KERNEL BENCH #####", flush=True)
+        try:
+            _attn_bench(device)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print("ATTN BENCH ERROR:", str(e)[:200], flush=True)
+        return
 
     if only in ("all", "triton"):
         print("\n##### TRITON KERNEL BENCH #####", flush=True)
