@@ -584,7 +584,45 @@
 </section>
 
 <section>
-  <div class="sec-head"><span class="sec-num">07</span><h2>Two things that look like defects and are not</h2></div>
+  <div class="sec-head"><span class="sec-num">07</span><h2>The attention kernel: accuracy won, speed lost</h2></div>
+  <div class="col">
+    <p>The precision sweeps put the error floor inside the fp16 attention matmuls. It is not
+    accumulation &mdash; cuBLAS and SDPA already accumulate in fp32 &mdash; it is five fp16
+    <em class="term">storage</em> roundings. <code>kernels/attention.py</code> keeps everything in fp32
+    and rounds only the tensor-core operands, and with <code>SPLIT=3</code> splits each operand into
+    fp16 hi/lo halves so the product is three MMAs at ~2<sup>&minus;22</sup> relative error.</p>
+  </div>
+  <div class="tablewrap">
+    <table>
+      <caption>Against an fp64 reference on a T4. SPLIT=3 is fp32-class; SPLIT=1 shows the operand rounding was the whole error.</caption>
+      <thead><tr><th>Case</th><th class="n">fp32 SDPA</th><th class="n">fp16 SDPA</th><th class="n">SPLIT=1</th><th class="n">SPLIT=3</th><th class="n">SPLIT=3 speed vs fp32</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">shape 1/5 hd=32</td><td class="n mono">9.49e-07</td><td class="n mono">0.00177</td><td class="n mono">0.00129</td><td class="n mono win">2.25e-06</td><td class="n mono bad">0.21&times;</td></tr>
+        <tr><td class="mono">shape 7 hd=8</td><td class="n mono">6.88e-07</td><td class="n mono">0.00187</td><td class="n mono">0.00191</td><td class="n mono win">1.44e-06</td><td class="n mono bad">0.35&times;</td></tr>
+        <tr><td class="mono">shape 9 H=1 hd=128</td><td class="n mono">1.27e-06</td><td class="n mono">0.00198</td><td class="n mono">0.00137</td><td class="n mono win">3.55e-06</td><td class="n mono bad">0.04&times;</td></tr>
+        <tr><td class="mono">shape 10 H=2 hd=64</td><td class="n mono">1.23e-06</td><td class="n mono">0.00187</td><td class="n mono">0.00171</td><td class="n mono win">2.29e-06</td><td class="n mono bad">0.04&times;</td></tr>
+        <tr><td class="mono">shape 11 H=16 hd=8</td><td class="n mono">8.52e-07</td><td class="n mono">0.00221</td><td class="n mono">0.00235</td><td class="n mono win">1.56e-06</td><td class="n mono bad">0.72&times;</td></tr>
+        <tr><td class="mono">shape 12 S=32</td><td class="n mono">1.15e-06</td><td class="n mono">0.00188</td><td class="n mono">0.00172</td><td class="n mono win">1.62e-06</td><td class="n mono bad">0.27&times;</td></tr>
+        <tr><td class="mono">shape 13 S=1024</td><td class="n mono">8.8e-07</td><td class="n mono">0.00177</td><td class="n mono">0.00129</td><td class="n mono win">2.17e-06</td><td class="n mono bad">0.21&times;</td></tr>
+        <tr><td class="mono">shape 6 B=10000, S=128</td><td class="n mono">(ref)</td><td class="n mono">0.00278</td><td class="n mono">0.00235</td><td class="n mono win">4.17e-06</td><td class="n mono bad">0.17&times;</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout warn">
+    <span class="label">Right idea, wrong GPU &mdash; and a compiler trap</span>
+    <p>fp32-class accuracy (1.4e-06&ndash;4.2e-06) from fp16 tensor cores, and end to end
+    13/13 PASS at <code>max_abs</code> 1.9e-06. But at 0.04&ndash;0.72&times; the speed of fp32 SDPA,
+    median 1.093&times; against 2.286&times; shipped. A T4's fp16 tensor cores are only ~8&times; its
+    fp32 cores, cutlass's fp16 SDPA is just 4.1&times; its fp32 one, and this kernel does three
+    matmuls per product; it needs an Ampere-class ratio to pay. Separately: registered through
+    <code>triton_op</code> it measured 2.1e-03 under <code>torch.compile</code>, because Inductor folds
+    <code>x &minus; fp32(fp16(x))</code> to zero inside fused kernels and the low halves vanish. An opaque
+    <code>custom_op</code> boundary restores 3.0e-06. Not shipped; published.</p>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="sec-num">08</span><h2>Two things that look like defects and are not</h2></div>
   <div class="col">
     <h3><code>--dtype bfloat16</code> fails the gate</h3>
     <p>It does: 6131 of 131072 elements, <code>max_abs 0.047</code>. So does the reference
@@ -605,7 +643,7 @@
 </section>
 
 <section>
-  <div class="sec-head"><span class="sec-num">08</span><h2>Reproducing this</h2></div>
+  <div class="sec-head"><span class="sec-num">09</span><h2>Reproducing this</h2></div>
   <div class="col">
     <p>Development happened on a laptop with an Intel iGPU and no NVIDIA card, so every GPU run
     was pushed headlessly to Kaggle and pulled back. The numbers above come from that path, and

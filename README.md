@@ -318,6 +318,86 @@ We matched the compiler. We did not beat it. The kernel stays behind
 `T3_TRITON`, correct and composable, with every number published; the shipped
 path is the one that is faster.
 
+## The tensor-core attention kernel: fp32-class accuracy, and why it loses on a T4
+
+The precision sweeps left one question open. fp16 is 4.01× and sits on the
+tolerance gate; moving the FFN and LayerNorm back to fp32 recovered almost
+nothing, so the error floor lives in the fp16 *attention* matmuls. Could a kernel
+keep the tensor cores and lose the error? `kernels/attention.py` is the answer,
+and it comes in two halves.
+
+**The error was never the accumulation.** cuBLAS and the memory-efficient SDPA
+kernel already accumulate in fp32. The fp16 path is inaccurate because tensors are
+*stored* in fp16 at five points, each a 2^-11 rounding. A kernel that keeps q, k,
+v, the softmax statistics and the output in fp32 and rounds only the matmul
+operands (`SPLIT=1`) has two rounding points instead of five — and measured, it
+barely helps. The operand rounding *was* the error.
+
+**Operand splitting removes it.** Write each fp32 operand as `x = x_hi + x_lo`,
+both halves fp16, so the low half carries the next 11 bits, and form the product
+as `a_hi*b_hi + a_hi*b_lo + a_lo*b_hi` — three tensor-core matmuls instead of one,
+each accumulated in fp32, dropping only the `lo*lo` term at ~2^-22 relative. That
+is `SPLIT=3`. Against an **fp64** reference, on the sweep's real (B, H, S, head_dim):
+
+| case | fp32 SDPA | fp16 SDPA | kernel, SPLIT=1 | **kernel, SPLIT=3** |
+|---|---|---|---|---|
+| shape 1/5 hd=32 | 9.49e-07 | 0.00177 | 0.00129 | **2.25e-06** |
+| shape 7 hd=8 | 6.88e-07 | 0.00187 | 0.00191 | **1.44e-06** |
+| shape 9 H=1 hd=128 | 1.27e-06 | 0.00198 | 0.00137 | **3.55e-06** |
+| shape 10 H=2 hd=64 | 1.23e-06 | 0.00187 | 0.00171 | **2.29e-06** |
+| shape 11 H=16 hd=8 | 8.52e-07 | 0.00221 | 0.00235 | **1.56e-06** |
+| shape 12 S=32 | 1.15e-06 | 0.00188 | 0.00172 | **1.62e-06** |
+| shape 13 S=1024 | 8.8e-07 | 0.00177 | 0.00129 | **2.17e-06** |
+| shape 6 B=10000, S=128 | (ref) | 0.00278 | 0.00235 | **4.17e-06** |
+
+SPLIT=3 lands at 1.4e-06—4.2e-06, against fp32 SDPA's own 6.9e-07—1.3e-06 and
+fp16's 1.8e-03—2.8e-03. **fp32-class error from fp16 tensor cores** — roughly 500× inside
+the gate, three orders of magnitude better than fp16. The online softmax never
+materializes the score matrix, so it keeps the `O(S)` memory the shape-14 result needs.
+
+**And it is slower.** Same runs, same session (`results/kaggle_t4_attn_v2.log`):
+
+| case | fp32 SDPA ms | fp16 SDPA ms | SPLIT=1 ms | SPLIT=3 ms | SPLIT=1 vs fp32 | SPLIT=3 vs fp32 |
+|---|---|---|---|---|---|---|
+| shape 1/5 hd=32 | 0.539 | 0.161 | 0.819 | 2.590 | 0.66× | 0.21× |
+| shape 7 hd=8 | 0.441 | 0.157 | 0.565 | 1.253 | 0.78× | 0.35× |
+| shape 9 H=1 hd=128 | 0.353 | 0.125 | 0.997 | 8.580 | 0.35× | 0.04× |
+| shape 10 H=2 hd=64 | 0.373 | 0.118 | 1.093 | 9.001 | 0.34× | 0.04× |
+| shape 11 H=16 hd=8 | 1.554 | 0.512 | 1.677 | 2.165 | 0.93× | 0.72× |
+| shape 12 S=32 | 0.191 | 0.076 | 0.408 | 0.719 | 0.47× | 0.27× |
+| shape 13 S=1024 | 9.191 | 2.268 | 12.649 | 43.537 | 0.73× | 0.21× |
+| shape 6 B=10000, S=128 | 37.082 | 11.250 | 62.618 | 214.216 | 0.59× | 0.17× |
+
+SPLIT=1 runs at 0.34—0.93× of fp32 SDPA, SPLIT=3 at 0.04—0.72×. Two reasons, and only
+one of them is ours:
+
+- **The ceiling is low on this GPU.** A T4's fp16 tensor cores are ~8× its fp32 CUDA cores,
+  and cutlass's fp16 SDPA is only 4.1× its fp32 SDPA on the long shape once softmax and
+  traffic are counted. SPLIT=3 does three times the matmuls. Even a cutlass-grade
+  kernel would top out near 1.4× on shape 13 and lose on the shapes where attention
+  is not the bottleneck. The idea pays where the fp16:fp32 MMA ratio is 16× or more —
+  Ampere and later — not on Turing.
+- **Triton's Turing codegen is well behind cutlass.** The plain SPLIT=1 kernel, doing
+  exactly the work of cutlass's fp16 SDPA, runs 4—6× slower than it: older MMA
+  instructions, no async copies, tiles squeezed into 64 KB of shared memory. v1 was
+  worse still (0.08× on the wide heads, out of shared memory at hd=128); v2 streams
+  pre-split fp16 operands, loads K transposed, compiles the bounds masks out for
+  even shapes and masks only the diagonal block, and got 2—5× back. Not enough.
+
+**A bug worth its own paragraph.** Registered through `torch.library.triton_op`,
+the kernel measured **2.08e-03** under `torch.compile` — fp16-level — from code that
+measures 2.3e-6 eager. Inductor traces a `triton_op` body, and by default does *not*
+emulate intermediate precision casts inside the pointwise kernels it fuses: the
+`x - x.half().float()` that produces each low half folds to zero, and the three-term
+product silently collapses to one. Registered as an opaque `custom_op` instead, the
+split survives compilation (2.98e-06). Precision tricks and fusing compilers do
+not mix unless you draw the boundary yourself.
+
+**End to end** (`T3_ATTN=triton`, `results/results_t4_attn.csv`): 13/13 PASS, worst
+`max_abs` 1.91e-06 — fp32-class, as promised — at a median of **1.093×** against the
+shipped **2.286×**. Not shipped. The kernel stays behind the flag with its numbers;
+on the right GPU it is the one we would reach for.
+
 ## Correctness notes
 
 - Every element must pass (zero failures); `NaN/Inf` is a hard fail. Measured
@@ -342,15 +422,16 @@ path is the one that is faster.
   2.953x at `max_abs` 1.72e-03, margin 1.17x — the error floor is in the
   attention matmuls, so there is no cheap middle ground on this axis. A real one
   would need fp16 storage with fp32 accumulation *inside* the attention kernel,
-  which SDPA's fp16 path does not expose.
+  which SDPA's fp16 path does not expose — so we wrote it; see the attention-kernel
+  section for what it did and did not deliver.
 - The stage ablation covers 4 representative shapes on one GPU, one run each;
   the 13-shape sweeps are the ones with repeat trials behind them.
 - The fused bias+GELU epilogue kernel was scoped and not built; Inductor
   already fuses it. The fused add+LayerNorm kernel **was** built and measured —
   see below — and is off by default for a reason we can name.
-- A hand-written attention kernel for Turing (fp16 storage, fp32 accumulation) is
-  out of scope (multi-day effort); it is also the only thing that could open the
-  precision middle ground measured above.
+- The tensor-core attention kernel is written and measured (section above): it
+  delivers fp32-class error but loses on speed on a T4, for reasons that are mostly
+  the GPU generation's. It would need an Ampere-class card to pay.
 - **`--dtype bfloat16` fails, and not because of us.** The harness accepts it
   (`run_all.py --dtype bfloat16`), and we do fail it: 6131/131072 elements,
   `max_abs 0.047`. But so does the *reference compared against itself* recomputed

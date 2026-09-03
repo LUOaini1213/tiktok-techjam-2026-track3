@@ -178,8 +178,16 @@ Figures: `figures/memory_wall.png` (the 20.5 TB wall), `figures/speedups.png`
   the compiler and did not beat it; it stays **off by default** with every number
   published.
 - The fused bias+GELU epilogue was scoped and not built; Inductor already fuses
-  it. A hand-written attention kernel for Turing (fp16 storage, fp32 accumulation)
-  remains a multi-day effort, and is the only route to the precision middle ground.
+  it.
+- The tensor-core attention kernel (`kernels/attention.py`) is written and measured.
+  With operand splitting it reaches fp32-class error (1.4e-06—4.2e-06 against an
+  fp64 reference; fp16 SDPA is 1.8e-03—2.8e-03) from fp16 tensor cores, and end to end
+  passes 13/13 at `max_abs` 1.9e-06. It runs at 0.04—0.72× the speed of fp32 SDPA on a T4,
+  median 1.093× against 2.286× shipped, because a T4's fp16:fp32 MMA ratio (~8×) cannot
+  absorb three matmuls per product and Triton's Turing codegen trails cutlass. It
+  ships off; on an Ampere-class card the arithmetic favours it. One finding from
+  it applies everywhere: Inductor folds `x - x.half().float()` to zero inside fused
+  kernels, so precision tricks must sit behind an opaque op boundary.
 
 ## 7. Reproducibility
 

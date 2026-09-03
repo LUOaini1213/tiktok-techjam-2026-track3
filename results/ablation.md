@@ -202,6 +202,46 @@ likely reason is that the memory-efficient attention backend makes its own
 contiguous copies of the strided q/k/v views that the split produces, so the
 reads the fusion saved are spent again one kernel later. Off by default.
 
+## The attention kernel: accuracy won, speed lost
+
+`kernels/attention.py`: fp32 statistics, fp16 tensor-core operands, and with
+`SPLIT=3` each operand split into fp16 hi/lo halves so the product is formed from
+three MMAs at ~2^-22 relative error. Against an fp64 reference on a T4:
+
+| case | fp32 SDPA | fp16 SDPA | kernel, SPLIT=1 | **kernel, SPLIT=3** |
+|---|---|---|---|---|
+| shape 1/5 hd=32 | 9.49e-07 | 0.00177 | 0.00129 | **2.25e-06** |
+| shape 7 hd=8 | 6.88e-07 | 0.00187 | 0.00191 | **1.44e-06** |
+| shape 9 H=1 hd=128 | 1.27e-06 | 0.00198 | 0.00137 | **3.55e-06** |
+| shape 10 H=2 hd=64 | 1.23e-06 | 0.00187 | 0.00171 | **2.29e-06** |
+| shape 11 H=16 hd=8 | 8.52e-07 | 0.00221 | 0.00235 | **1.56e-06** |
+| shape 12 S=32 | 1.15e-06 | 0.00188 | 0.00172 | **1.62e-06** |
+| shape 13 S=1024 | 8.8e-07 | 0.00177 | 0.00129 | **2.17e-06** |
+| shape 6 B=10000, S=128 | (ref) | 0.00278 | 0.00235 | **4.17e-06** |
+
+| case | fp32 SDPA ms | fp16 SDPA ms | SPLIT=1 ms | SPLIT=3 ms | SPLIT=1 vs fp32 | SPLIT=3 vs fp32 |
+|---|---|---|---|---|---|---|
+| shape 1/5 hd=32 | 0.539 | 0.161 | 0.819 | 2.590 | 0.66× | 0.21× |
+| shape 7 hd=8 | 0.441 | 0.157 | 0.565 | 1.253 | 0.78× | 0.35× |
+| shape 9 H=1 hd=128 | 0.353 | 0.125 | 0.997 | 8.580 | 0.35× | 0.04× |
+| shape 10 H=2 hd=64 | 0.373 | 0.118 | 1.093 | 9.001 | 0.34× | 0.04× |
+| shape 11 H=16 hd=8 | 1.554 | 0.512 | 1.677 | 2.165 | 0.93× | 0.72× |
+| shape 12 S=32 | 0.191 | 0.076 | 0.408 | 0.719 | 0.47× | 0.27× |
+| shape 13 S=1024 | 9.191 | 2.268 | 12.649 | 43.537 | 0.73× | 0.21× |
+| shape 6 B=10000, S=128 | 37.082 | 11.250 | 62.618 | 214.216 | 0.59× | 0.17× |
+
+fp32-class accuracy (1.4e-06—4.2e-06), at 0.04—0.72× the speed of fp32 SDPA. The
+ceiling on a T4 is the problem: fp16 cutlass SDPA is only 4.1× fp32 here, and the
+kernel does 3× the matmuls; Triton's Turing codegen then loses another 4—6× to
+cutlass. Under `torch.compile` the `triton_op` registration measured
+2.08e-03 because Inductor folds the lo halves to zero (it does not emulate
+intermediate casts); an opaque `custom_op` restores 2.98e-06.
+
+End to end (`T3_ATTN=triton`, `results_t4_attn.csv`): 13/13 PASS, worst `max_abs`
+1.91e-06, median 1.093x against 2.286x shipped. Off by default. Logs:
+`kaggle_t4_attn_v1.log` (first cut), `kaggle_t4_attn_v2.log` (the tables above),
+`kaggle_t4_attn_v3.log` (composition fix).
+
 ## Cross-GPU: what the hardware is worth
 
 The same code on two free cards, both fp32, both 13/13 PASS:
