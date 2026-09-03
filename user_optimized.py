@@ -30,7 +30,8 @@ Ablation / robustness toggles via environment variables (see README):
   T3_FP32_FFN   = 1 | 0                          (default 0; force FFN+LN fp32)
   T3_CHUNK_BS   = <int>                          (override batch chunk size)
   T3_TRITON     = 1 | 0                          (default 0; hand-written fused
-                                                  add+LayerNorm, disables compile)
+                                                  add+LayerNorm as a registered op,
+                                                  composes with torch.compile)
 """
 
 from __future__ import annotations
@@ -45,10 +46,11 @@ import torch.nn.functional as F
 from torch_transformer_benchmark import BaselineTransformer
 
 try:
-    from kernels import can_fuse, fused_add_layernorm
+    from kernels import HAVE_TRITON_OP, can_fuse, fused_add_layernorm
     HAVE_KERNELS = True
 except Exception:  # the package is optional; the model works without it
     HAVE_KERNELS = False
+    HAVE_TRITON_OP = False
 
 
 # Live [chunk, S, max(D, ffn)] intermediates a block keeps alive simultaneously.
@@ -80,12 +82,13 @@ class UserOptimizedTransformer(BaselineTransformer):
         self._compile_ok = _env_flag("T3_COMPILE", True)
         self._can_compile = False  # set in _plan: Triton needs CUDA capability >= 7.0
         self._fp32_ffn = _env_flag("T3_FP32_FFN", False)
-        # Hand-written Triton fused add+LayerNorm. Off by default until measured;
-        # it is an alternative to Inductor rather than a complement, and calling
-        # a raw Triton kernel from inside a compiled region breaks the graph, so
-        # asking for one turns the other off.
+        # Hand-written Triton fused add+LayerNorm, off by default. When the
+        # kernel is registered as a torch.library op (torch >= 2.6) Inductor can
+        # schedule it inside the compiled graph, so compile stays on and the two
+        # compose. Only the raw-launch fallback breaks the graph, and only then
+        # does asking for the kernel turn compilation off.
         self._triton = HAVE_KERNELS and _env_flag("T3_TRITON", False)
-        if self._triton:
+        if self._triton and not HAVE_TRITON_OP:
             self._compile_ok = False
 
     # ---- one-time device/shape aware planning -------------------------------

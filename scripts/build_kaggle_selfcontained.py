@@ -110,10 +110,11 @@ def main():
     uo = uo.replace("from __future__ import annotations\n", "")
     uo = uo.replace("from torch_transformer_benchmark import BaselineTransformer\n", "")
     uo = uo.replace("""try:
-    from kernels import can_fuse, fused_add_layernorm
+    from kernels import HAVE_TRITON_OP, can_fuse, fused_add_layernorm
     HAVE_KERNELS = True
 except Exception:  # the package is optional; the model works without it
-    HAVE_KERNELS = False""", "HAVE_KERNELS = True")
+    HAVE_KERNELS = False
+    HAVE_TRITON_OP = False""", "HAVE_KERNELS = True")
 
     driver = read(os.path.join("scripts", "_kaggle_driver.py"))
 

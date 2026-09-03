@@ -85,6 +85,59 @@ def _next_pow2(n: int) -> int:
     return 1 << (n - 1).bit_length()
 
 
+def _launch(flat, rc, out, total, weight, bias, n, eps, has_res, kernel):
+    """One place that knows the launch geometry, shared by both entry points."""
+    block = _next_pow2(n)
+    # 1024 lanes is where a single row stops fitting comfortably in registers;
+    # below that, fewer warps keeps occupancy up on the narrow shapes.
+    num_warps = 4 if block <= 512 else 8
+    kernel[(flat.shape[0],)](
+        flat, rc, out, total, weight, bias,
+        flat.stride(0), n, eps,
+        HAS_RESIDUAL=has_res, BLOCK=block, num_warps=num_warps,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Registration as a PyTorch custom op.
+#
+# Calling a raw Triton kernel from inside a torch.compile region breaks the
+# graph, which is why the first version of this kernel had to switch
+# compilation off to run at all -- and lost end to end for it. Registering it
+# through torch.library.triton_op makes it a first-class op that Inductor can
+# schedule *inside* the compiled graph and fuse the surrounding pointwise work
+# around, instead of being routed around. wrap_triton is what lets the compiler
+# see through the launch under FakeTensor tracing, so no separate fake/meta
+# implementation is needed.
+#
+# torch.library.triton_op arrived in PyTorch 2.6. On older builds (the P100's
+# 2.5.1) the op is simply not registered and the raw launch is used; compile is
+# unavailable there anyway.
+# ---------------------------------------------------------------------------
+HAVE_TRITON_OP = False
+if HAVE_TRITON:
+    try:
+        from torch.library import triton_op, wrap_triton
+
+        @triton_op("exactswap::fused_add_layernorm", mutates_args={})
+        def _fused_add_layernorm_op(
+            x: torch.Tensor, residual: torch.Tensor,
+            weight: torch.Tensor, bias: torch.Tensor, eps: float,
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            n = x.shape[-1]
+            flat = x.contiguous().view(-1, n)
+            rc = residual.contiguous().view(-1, n)
+            out = torch.empty_like(flat)
+            total = torch.empty_like(flat)
+            _launch(flat, rc, out, total, weight.contiguous(), bias.contiguous(),
+                    n, eps, True, wrap_triton(_fused_add_ln_fwd))
+            return out.view(x.shape), total.view(x.shape)
+
+        HAVE_TRITON_OP = True
+    except Exception:  # pragma: no cover - older torch, or a registration clash
+        HAVE_TRITON_OP = False
+
+
 def can_fuse(x: torch.Tensor) -> bool:
     """Whether the Triton path is usable for this tensor at all."""
     return (
@@ -107,34 +160,24 @@ def fused_add_layernorm(x, residual, weight, bias, eps=1e-5):
         return torch.nn.functional.layer_norm(
             s, (s.shape[-1],), weight, bias, eps), s
 
+    # The registered op is the path that survives torch.compile.
+    if residual is not None and HAVE_TRITON_OP:
+        return _fused_add_layernorm_op(x, residual, weight, bias, float(eps))
+
     xc = x.contiguous()
     n = xc.shape[-1]
     flat = xc.view(-1, n)
-    rows = flat.shape[0]
 
     out = torch.empty_like(flat)
     if residual is None:
-        total = flat            # unused by the kernel; keeps the signature simple
-        has_res = False
+        rc, total, has_res = flat, flat, False   # placeholders the kernel ignores
     else:
         rc = residual.contiguous().view(-1, n)
         assert rc.shape == flat.shape, "residual must match x"
-        total = torch.empty_like(flat)
-        has_res = True
+        total, has_res = torch.empty_like(flat), True
 
-    block = _next_pow2(n)
-    # 1024 lanes is where a single row stops fitting comfortably in registers;
-    # below that, fewer warps keeps occupancy up on the narrow shapes.
-    num_warps = 4 if block <= 512 else 8
-
-    _fused_add_ln_fwd[(rows,)](
-        flat, rc if has_res else flat, out, total if has_res else flat,
-        weight.contiguous(), bias.contiguous(),
-        flat.stride(0), n, eps,
-        HAS_RESIDUAL=has_res,
-        BLOCK=block,
-        num_warps=num_warps,
-    )
+    _launch(flat, rc, out, total, weight.contiguous(), bias.contiguous(),
+            n, eps, has_res, _fused_add_ln_fwd)
     shape = x.shape
     return out.view(shape), (total.view(shape) if has_res else x)
 

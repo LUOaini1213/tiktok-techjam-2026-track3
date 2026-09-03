@@ -199,8 +199,14 @@ def _triton_bench(device):
         s.sort()
         return s[len(s) // 2]
 
+    try:
+        from kernels import HAVE_TRITON_OP as _op
+    except Exception:
+        _op = globals().get("HAVE_TRITON_OP", False)
+    print(f"HAVE_TRITON_OP={_op}", flush=True)
     print("triton bench: case,rows,D,eager_ms,inductor_ms,triton_ms,"
-          "vs_eager,vs_inductor,max_abs", flush=True)
+          "inductor+ourop_ms,vs_eager,vs_inductor,inductor_vs_ourop_in_graph,max_abs",
+          flush=True)
     for rows, d, label in CASES:
         x = torch.randn(rows, d, device=device, dtype=torch.float32)
         r = torch.randn(rows, d, device=device, dtype=torch.float32)
@@ -215,6 +221,11 @@ def _triton_bench(device):
         def triton_fn():
             return fused_add_layernorm(x, r, ln.weight, ln.bias, ln.eps)
 
+        # The number that decides everything: our op scheduled by Inductor
+        # inside a compiled region, rather than compilation being switched off
+        # around it.
+        compiled_ours = torch.compile(triton_fn, dynamic=False)
+
         with torch.inference_mode():
             ref_out, ref_sum = eager()
             got_out, got_sum = triton_fn()
@@ -228,11 +239,20 @@ def _triton_bench(device):
                 print("  inductor failed:", str(ex)[:80], flush=True)
                 c = float("nan")
             t = timeit(triton_fn)
+            try:
+                co_out, co_sum = compiled_ours()
+                mabs = max(mabs, (co_out - ref_out).abs().max().item(),
+                           (co_sum - ref_sum).abs().max().item())
+                ct = timeit(compiled_ours)
+            except Exception as ex:
+                print("  compiled(our op) failed:", str(ex)[:120], flush=True)
+                ct = float("nan")
 
-        print(f"TRI,{label},{rows},{d},{e:.4f},{c:.4f},{t:.4f},"
-              f"{e/t:.3f},{c/t:.3f},{mabs:.3g}", flush=True)
+        print(f"TRI,{label},{rows},{d},{e:.4f},{c:.4f},{t:.4f},{ct:.4f},"
+              f"{e/t:.3f},{c/t:.3f},{c/ct:.3f},{mabs:.3g}", flush=True)
         _TRITON_RESULTS.append((label, rows, d, f"{e:.4f}", f"{c:.4f}", f"{t:.4f}",
-                                f"{e/t:.3f}", f"{c/t:.3f}", f"{mabs:.3g}"))
+                                f"{ct:.4f}", f"{e/t:.3f}", f"{c/t:.3f}", f"{c/ct:.3f}",
+                                f"{mabs:.3g}"))
         del x, r, ln
         torch.cuda.empty_cache()
 
