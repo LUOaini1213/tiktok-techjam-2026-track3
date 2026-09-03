@@ -33,6 +33,10 @@ Ablation / robustness toggles via environment variables (see README):
   T3_FP32_FFN   = 1 | 0                          (default 0; force FFN+LN fp32)
   T3_CHUNK_BS   = <int>                          (override batch chunk size)
   T3_FUSED_QKV  = 1 | 0                          (default 0; one [3D,D] GEMM for q,k,v)
+  T3_ATTN       = sdpa | triton                  (default sdpa; tensor-core attention
+                                                  kernel with fp32 statistics)
+  T3_ATTN_SPLIT = 1 | 3                          (default 3; operand splitting for
+                                                  fp32-class error on fp16 MMAs)
   T3_TRITON     = 1 | 0                          (default 0; hand-written fused
                                                   add+LayerNorm as a registered op,
                                                   composes with torch.compile)
@@ -49,12 +53,16 @@ import torch.nn.functional as F
 # Reuse the reference model definition so parameter names match exactly.
 from torch_transformer_benchmark import BaselineTransformer
 
+# --- kernels import (begin) --- the Kaggle builder replaces this block
 try:
-    from kernels import HAVE_TRITON_OP, can_fuse, fused_add_layernorm
+    from kernels import (HAVE_TRITON_OP, can_fuse, fused_add_layernorm,
+                         triton_attention, can_use_attention)
     HAVE_KERNELS = True
 except Exception:  # the package is optional; the model works without it
     HAVE_KERNELS = False
     HAVE_TRITON_OP = False
+    triton_attention = can_use_attention = None
+# --- kernels import (end) ---
 
 
 # Live [chunk, S, max(D, ffn)] intermediates a block keeps alive simultaneously.
@@ -107,6 +115,19 @@ class UserOptimizedTransformer(BaselineTransformer):
         # attention module -- not a Parameter, not a registered buffer -- so
         # state_dict and the harness' strict weight copy never see it.
         self._fused_qkv = _env_flag("T3_FUSED_QKV", False)
+        # Attention implementation. 'triton' is the tensor-core kernel with fp32
+        # statistics (kernels/attention.py); SPLIT=3 adds operand splitting for
+        # fp32-class error at fp16 MMA rate. Off by default until measured.
+        self._attn_impl = os.environ.get("T3_ATTN", "sdpa").strip().lower()
+        try:
+            self._attn_split = int(os.environ.get("T3_ATTN_SPLIT", "3"))
+        except ValueError:
+            self._attn_split = 3
+        if self._attn_split not in (1, 3):
+            self._attn_split = 3
+        if self._attn_impl == "triton" and (not HAVE_KERNELS or triton_attention is None):
+            print("[user_optimized] T3_ATTN=triton requested but the kernel is unavailable; using sdpa")
+            self._attn_impl = "sdpa"
         # Hand-written Triton fused add+LayerNorm, off by default. When the
         # kernel is registered as a torch.library op (torch >= 2.6) Inductor can
         # schedule it inside the compiled graph, so compile stays on and the two
@@ -246,9 +267,12 @@ class UserOptimizedTransformer(BaselineTransformer):
         if all_valid:
             # Graded hot path: no padding. A dense [S,S] mask is impossible for
             # S=1e5, so causality MUST go through is_causal (kernel-generated).
-            out = F.scaled_dot_product_attention(
-                q, k, v, attn_mask=None, is_causal=causal, scale=attn.scale
-            )
+            if self._attn_impl == "triton" and can_use_attention(q):
+                out = triton_attention(q, k, v, attn.scale, causal, self._attn_split)
+            else:
+                out = F.scaled_dot_product_attention(
+                    q, k, v, attn_mask=None, is_causal=causal, scale=attn.scale
+                )
         else:
             # Padded fallback (only reached for small S with a real mask).
             neg = torch.finfo(q.dtype).min

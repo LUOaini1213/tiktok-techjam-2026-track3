@@ -1,0 +1,27 @@
+=== ENV ===
+gpu Tesla T4 | torch 2.10.0+cu128 | cuda 12.8 | cc (7, 5)
+sdpa backend probe  (head_dim -> which backends can run, is_causal=True)
+  PROBE float32  hd=   8  flash=no   efficient=yes  math=yes
+  PROBE float32  hd=  32  flash=no   efficient=yes  math=yes
+  PROBE float32  hd=  64  flash=no   efficient=yes  math=yes
+  PROBE float32  hd= 128  flash=no   efficient=yes  math=yes
+  PROBE float32  hd= 256  flash=no   efficient=yes  math=yes
+  PROBE float16  hd=   8  flash=no   efficient=yes  math=yes
+  PROBE float16  hd=  32  flash=no   efficient=yes  math=yes
+  PROBE float16  hd=  64  flash=no   efficient=yes  math=yes
+  PROBE float16  hd= 128  flash=no   efficient=yes  math=yes
+  PROBE float16  hd= 256  flash=no   efficient=yes  math=yes
+  shapes -> head_dim: D=128,H=4 -> 32 | D=32,H=4 -> 8 | D=1024,H=4 -> 256 | D=128,H=1 -> 128 | D=128,H=2 -> 64 | D=128,H=16 -> 8 | shape14 D=1024,H=16 -> 64
+
+##### ATTENTION KERNEL BENCH #####
+HAVE_TRITON=True HAVE_ATTN_OP=True
+ATTN: case | BxHxSxhd | sdpa32 ms | sdpa16 ms | k1 ms | k3 ms | err sdpa32 | err sdpa16 | err k1 | err k3 | k1 vs sdpa32 | k3 vs sdpa32
+ATTN,shape 1/5 B=64 H=4 S=128 hd=32,64x4x128x32,0.5345,0.1595,0.7791,2.2774,9.49e-07,0.00177,0.00129,2.25e-06,0.686,0.235
+ATTN,shape 7 hd=8,64x4x128x8,0.2249,0.0881,0.2547,0.5307,6.88e-07,0.00187,0.00191,1.39e-06,0.883,0.424
+ATTN,shape 9 H=1 hd=128,64x1x128x128,0.3584,0.1246,4.5548,,1.27e-06,0.00198,0.00137,FAIL:out of resource: shared memory; Required: 73728; Hardware limit: 65536,0.079,
+ATTN,shape 10 H=2 hd=64,64x2x128x64,0.3706,0.1167,4.8096,10.9937,1.23e-06,0.00187,0.00171,2.51e-06,0.077,0.034
+ATTN,shape 11 H=16 hd=8,64x16x128x8,0.6021,0.2327,1.0506,2.4753,8.52e-07,0.00221,0.00235,1.56e-06,0.573,0.243
+ATTN,shape 12 S=32,64x4x32x32,0.1325,0.0572,0.2676,0.4016,1.15e-06,0.00188,0.00172,1.89e-06,0.495,0.330
+ATTN,shape 13 S=1024,64x4x1024x32,9.6482,2.4717,15.6675,54.5061,8.8e-07,0.00177,0.00129,2.16e-06,0.616,0.177
+ATTN,shape 6 B=10000,10000x4x128x32,40.1446,12.1513,61.4789,195.8932,0,0.00278,0.00235,4.05e-06,0.653,0.205
+compile compose: OK  max_abs=3.1e-06

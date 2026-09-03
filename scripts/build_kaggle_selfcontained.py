@@ -111,12 +111,13 @@ def main():
     uo = read("user_optimized.py")
     uo = uo.replace("from __future__ import annotations\n", "")
     uo = uo.replace("from torch_transformer_benchmark import BaselineTransformer\n", "")
-    uo = uo.replace("""try:
-    from kernels import HAVE_TRITON_OP, can_fuse, fused_add_layernorm
-    HAVE_KERNELS = True
-except Exception:  # the package is optional; the model works without it
-    HAVE_KERNELS = False
-    HAVE_TRITON_OP = False""", "HAVE_KERNELS = True")
+    # Everything between the markers is the package import; in the single-file
+    # build the kernels are inlined above it, under their module-level names.
+    b0 = uo.index("# --- kernels import (begin) ---")
+    b1 = uo.index("# --- kernels import (end) ---")
+    b1 = uo.index("\n", b1)
+    uo = uo[:b0] + ("HAVE_KERNELS = True\ntriton_attention = attention\n"
+         "can_use_attention = can_use\n" + uo[b1 + 1:])
 
     driver = read(os.path.join("scripts", "_kaggle_driver.py"))
 

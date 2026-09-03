@@ -30,6 +30,8 @@ logs/
 !results/kaggle_t4_probe.log
 !results/kaggle_t4_qkv_run.log
 !results/kaggle_t4_graph_run.log
+!results/kaggle_t4_attn_v1.log
+!results/kaggle_t4_attn_v2.log
 .DS_Store
 .kaggle_upload/
 .kaggle_out*/
